@@ -11,6 +11,8 @@ import com.xxl.job.core.handler.impl.ScriptJobHandler;
 import com.xxl.job.core.log.XxlJobFileAppender;
 import com.xxl.job.core.openapi.executor.ExecutorBiz;
 import com.xxl.job.core.openapi.executor.dto.*;
+import com.xxl.job.core.security.SecurityTool;
+import com.xxl.job.core.security.ThreatDetector;
 import com.xxl.job.core.thread.JobThread;
 import com.xxl.tool.response.Response;
 import org.slf4j.Logger;
@@ -54,14 +56,31 @@ public class ExecutorBizImpl implements ExecutorBiz {
         String removeOldReason = null;
         GlueTypeEnum glueTypeEnum = GlueTypeEnum.match(triggerRequest.getGlueType());
 
-        // valid glue (non-BEAN) enabled
-        if (glueTypeEnum != null && GlueTypeEnum.BEAN != glueTypeEnum) {
-            boolean glueEnabled = XxlJobExecutor.getInstance().getGlueEnabled();
-            if (!glueEnabled) {
-                logger.warn(">>>>>>>>>>> xxl-job executor not support current glue type[{}], please check executor configuration.", glueTypeEnum.getDesc());
-                return Response.of(XxlJobContext.HANDLE_CODE_FAIL, "fail, current glue type ["+ glueTypeEnum.getDesc() +"] not supported.");
-            }
+        // hardened build: only BEAN is allowed, GLUE (groovy / script) is always rejected
+        if (GlueTypeEnum.BEAN != glueTypeEnum) {
+            SecurityTool.event("EXECUTOR_GLUE_REJECTED",
+                    "jobId", triggerRequest.getJobId(),
+                    "logId", triggerRequest.getLogId(),
+                    "glueType", triggerRequest.getGlueType(),
+                    "glueSourceLength", triggerRequest.getGlueSource()==null?0:triggerRequest.getGlueSource().length());
+            // authenticated GLUE attempt: admin or token compromised, keep payload as evidence
+            ThreatDetector.inspectAndCapture("executor-trigger", "glueSource", triggerRequest.getGlueSource(), true,
+                    "jobId", triggerRequest.getJobId(), "logId", triggerRequest.getLogId(), "glueType", triggerRequest.getGlueType());
+            return Response.of(XxlJobContext.HANDLE_CODE_FAIL, "fail, glue type [" + triggerRequest.getGlueType() + "] is disabled in hardened build, only BEAN is allowed.");
         }
+        // hardened build: BEAN handler allowlist
+        if (!XxlJobExecutor.getInstance().isHandlerAllowed(triggerRequest.getExecutorHandler())) {
+            SecurityTool.event("EXECUTOR_HANDLER_REJECTED",
+                    "jobId", triggerRequest.getJobId(),
+                    "logId", triggerRequest.getLogId(),
+                    "handler", triggerRequest.getExecutorHandler());
+            ThreatDetector.inspectAndCapture("executor-handler-rejected", "executorParam", triggerRequest.getExecutorParams(), true,
+                    "jobId", triggerRequest.getJobId(), "handler", triggerRequest.getExecutorHandler());
+            return Response.of(XxlJobContext.HANDLE_CODE_FAIL, "job handler [" + triggerRequest.getExecutorHandler() + "] is not in executor handler allowlist.");
+        }
+        // hardened build: inspect BEAN param (alert only, param semantic belongs to handler)
+        ThreatDetector.inspectAndCapture("executor-trigger", "executorParam", triggerRequest.getExecutorParams(), false,
+                "jobId", triggerRequest.getJobId(), "logId", triggerRequest.getLogId(), "handler", triggerRequest.getExecutorHandler());
 
         // dispatch handler
         if (GlueTypeEnum.BEAN == glueTypeEnum) {

@@ -6,6 +6,7 @@ import com.xxl.job.core.handler.annotation.XxlJob;
 import com.xxl.job.core.handler.impl.MethodJobHandler;
 import com.xxl.job.core.log.XxlJobFileAppender;
 import com.xxl.job.core.openapi.admin.AdminBiz;
+import com.xxl.job.core.security.SecurityTool;
 import com.xxl.job.core.server.EmbedServer;
 import com.xxl.job.core.thread.ExecutorRegistryThreadHelper;
 import com.xxl.job.core.thread.JobLogFileCleanThreadHelper;
@@ -20,8 +21,10 @@ import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
@@ -56,7 +59,12 @@ public class XxlJobExecutor  {
     private String address;                                         // executor registry-address: default use address to registry , otherwise use ip:port if address is null
     private String logPath = "/data/applogs/xxl-job/jobhandler";    // executor log-path
     private int logRetentionDays = 30;                              // executor log-retention-days
-    private boolean glueEnabled = true;                             // executor glue (non-BEAN) task enable, default true
+    private boolean glueEnabled = false;                            // hardened build: glue (non-BEAN) task is always disabled
+    private Set<String> handlerAllowlist = null;                    // hardened build: allowed BEAN handler names, null means all registered handlers
+    /**
+     * hardened build: dangerous sample handlers (os command / arbitrary http) often copied into production, denied unless explicitly allowlisted
+     */
+    private static final Set<String> DANGEROUS_SAMPLE_HANDLERS = Set.of("commandJobHandler", "httpJobHandler");
 
     public void setAdminAddresses(String adminAddresses) {
         this.adminAddresses = adminAddresses;
@@ -89,7 +97,27 @@ public class XxlJobExecutor  {
         this.logRetentionDays = logRetentionDays;
     }
     public void setGlueEnabled(boolean glueEnabled) {
-        this.glueEnabled = glueEnabled;
+        // hardened build: glue can not be enabled
+        if (glueEnabled) {
+            logger.warn(">>>>>>>>>>> xxl-job hardened build, glueEnabled=true is ignored, GLUE execution is permanently disabled.");
+        }
+        this.glueEnabled = false;
+    }
+    /**
+     * @param handlerAllowlist  comma-separated BEAN handler names; blank means all registered handlers
+     */
+    public void setHandlerAllowlist(String handlerAllowlist) {
+        if (StringTool.isBlank(handlerAllowlist)) {
+            this.handlerAllowlist = null;
+            return;
+        }
+        Set<String> allowlist = new HashSet<>();
+        for (String item : handlerAllowlist.split(",")) {
+            if (StringTool.isNotBlank(item)) {
+                allowlist.add(item.trim());
+            }
+        }
+        this.handlerAllowlist = allowlist;
     }
 
     public String getAppname() {
@@ -105,7 +133,16 @@ public class XxlJobExecutor  {
         return address;
     }
     public boolean getGlueEnabled() {
-        return glueEnabled;
+        return false;
+    }
+    public boolean isHandlerAllowed(String name) {
+        if (name == null) {
+            return false;
+        }
+        if (handlerAllowlist == null) {
+            return !DANGEROUS_SAMPLE_HANDLERS.contains(name);
+        }
+        return handlerAllowlist.contains(name);
     }
 
 
@@ -143,6 +180,10 @@ public class XxlJobExecutor  {
         if (StringTool.isBlank(accessToken)) {
             throw new RuntimeException("xxl-job executor accessToken empty.");
         }
+        if (SecurityTool.isWeakToken(accessToken)) {
+            throw new RuntimeException("xxl-job executor " + SecurityTool.weakTokenMsg());
+        }
+        logger.info(">>>>>>>>>>> xxl-job hardened executor, glue disabled, handlerAllowlist:{}", handlerAllowlist==null?"<all registered>":handlerAllowlist);
 
         // bind instance
         xxlJobExecutor = this;

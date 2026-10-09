@@ -1,0 +1,96 @@
+# hardened build end-to-end test, see run_e2e.sh
+name: xxljob-e2e
+
+x-java: &java
+  image: eclipse-temurin:17-jre
+  networks: [e2e]
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: xxl_job
+    volumes:
+      - ../../doc/db/tables_xxl_job.sql:/docker-entrypoint-initdb.d/tables_xxl_job.sql:ro
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+    networks: [e2e]
+
+  webhook:
+    image: python:3.12-alpine
+    command: ["python", "-u", "/t/webhook.py"]
+    volumes:
+      - ./:/t:ro
+      - ./out:/out
+    networks: [e2e]
+
+  admin:
+    <<: *java
+    command:
+      - java
+      - -DLOG_HOME=/logs
+      - -jar
+      - /app/admin.jar
+      - --spring.datasource.url=jdbc:mysql://mysql:3306/xxl_job?useUnicode=true&characterEncoding=UTF-8&autoReconnect=true&serverTimezone=UTC
+      - --spring.datasource.username=root
+      - --spring.datasource.password=${MYSQL_ROOT_PASSWORD}
+      - --xxl.job.registry.allowed-cidrs=172.28.0.0/16
+      - --xxl.job.security.alert.webhook-url=http://webhook:8000/alert
+      - --xxl.job.security.alert.min-severity=HIGH
+      - --xxl.job.security.payload-rules=/t/payload-rules.txt
+      - --xxl.job.security.canary-tokens=${CANARY_TOKEN}
+      - --xxl.job.security.metrics-token=${METRICS_TOKEN}
+    environment:
+      XXL_JOB_SECURITY_INIT_ADMIN_PASSWORD: ${INIT_ADMIN_PASSWORD:-}
+    volumes:
+      - ../../xxl-job-admin/target/xxl-job-admin-3.5.1-SNAPSHOT.jar:/app/admin.jar:ro
+      - ./:/t:ro
+      - ./out/admin-logs:/logs
+    depends_on:
+      mysql: {condition: service_healthy}
+
+  executor:
+    <<: *java
+    command:
+      - java
+      - -DLOG_HOME=/logs
+      - -jar
+      - /app/executor.jar
+      - --xxl.job.admin.addresses=http://admin:8080
+      - --xxl.job.executor.logpath=/logs/jobhandler
+    environment:
+      XXL_JOB_ACCESS_TOKEN: ${EXECUTOR_TOKEN}
+      XXL_JOB_SECURITY_ALERT_WEBHOOK: http://webhook:8000/alert
+      XXL_JOB_SECURITY_PAYLOAD_RULES: /t/payload-rules.txt
+      XXL_JOB_SECURITY_CANARY_TOKENS: ${CANARY_TOKEN}
+    volumes:
+      - ../../xxl-job-executor-samples/xxl-job-executor-sample-springboot/target/xxl-job-executor-sample-springboot-3.5.1-SNAPSHOT.jar:/app/executor.jar:ro
+      - ./:/t:ro
+      - ./out/executor-logs:/logs
+
+  # plays the role of the SOC test driver AND of an attacker with a foothold inside the cluster network
+  tester:
+    image: python:3.12-alpine
+    entrypoint: ["python", "-u", "/t/e2e_test.py"]
+    environment:
+      ADMIN_PASSWORD: ${INIT_ADMIN_PASSWORD_FOR_TEST:-}
+      GROUP_TOKEN: ${GROUP_TOKEN}
+      CANARY_TOKEN: ${CANARY_TOKEN}
+      METRICS_TOKEN: ${METRICS_TOKEN}
+    volumes:
+      - ./:/t:ro
+      - ./out:/out
+      - ../../doc/detection:/detection:ro
+    networks: [e2e]
+    profiles: [tools]
+
+networks:
+  e2e:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

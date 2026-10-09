@@ -96,7 +96,7 @@ public class XxlJobGroup {
                 ", name='" + name + '\'' +
                 ", addressType=" + addressType +
                 ", addressList='" + addressList + '\'' +
-                ", accessToken='" + accessToken + '\'' +
+                ", accessToken='" + (accessToken==null||accessToken.isEmpty()?"":"****") + '\'' +
                 ", updateTime=" + updateTime +
                 '}';
     }

@@ -49,8 +49,8 @@ public class XxlJobConfig {
     @Value("${xxl.job.executor.excludedpackage}")
     private String excludedPackage;
 
-    @Value("${xxl.job.executor.glueenabled:true}")
-    private Boolean glueEnabled;
+    @Value("${xxl.job.executor.handlerallowlist:}")
+    private String handlerAllowlist;
 
     @Bean
     public XxlJobSpringExecutor xxlJobExecutor() {
@@ -67,7 +67,7 @@ public class XxlJobConfig {
         xxlJobSpringExecutor.setLogPath(logPath);
         xxlJobSpringExecutor.setLogRetentionDays(logRetentionDays);
         xxlJobSpringExecutor.setExcludedPackage(excludedPackage);
-        xxlJobSpringExecutor.setGlueEnabled(glueEnabled);
+        xxlJobSpringExecutor.setHandlerAllowlist(handlerAllowlist);
 
         return xxlJobSpringExecutor;
     }

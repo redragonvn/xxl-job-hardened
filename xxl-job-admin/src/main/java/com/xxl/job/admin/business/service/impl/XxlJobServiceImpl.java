@@ -10,6 +10,7 @@ import com.xxl.job.admin.business.scheduler.cron.CronExpression;
 import com.xxl.job.admin.business.scheduler.misfire.MisfireStrategyEnum;
 import com.xxl.job.admin.business.scheduler.route.ExecutorRouteStrategyEnum;
 import com.xxl.job.admin.business.scheduler.thread.JobScheduleHelper;
+import com.xxl.job.admin.business.scheduler.trigger.JobTrigger;
 import com.xxl.job.admin.business.scheduler.trigger.TriggerTypeEnum;
 import com.xxl.job.admin.business.scheduler.type.ScheduleTypeEnum;
 import com.xxl.job.admin.business.service.XxlJobService;
@@ -17,6 +18,8 @@ import com.xxl.job.admin.framework.util.I18nUtil;
 import com.xxl.job.admin.framework.util.JobGroupPermissionUtil;
 import com.xxl.job.core.constant.ExecutorBlockStrategyEnum;
 import com.xxl.job.core.glue.GlueTypeEnum;
+import com.xxl.job.core.security.SecurityTool;
+import com.xxl.job.core.security.ThreatDetector;
 import com.xxl.sso.core.model.LoginInfo;
 import com.xxl.tool.core.DateTool;
 import com.xxl.tool.core.StringTool;
@@ -109,6 +112,17 @@ public class XxlJobServiceImpl implements XxlJobService {
 		if (GlueTypeEnum.match(jobInfo.getGlueType()) == null) {
 			return Response.ofFail ( (I18nUtil.getString("jobinfo_field_gluetype")+I18nUtil.getString("system_invalid")) );
 		}
+		// hardened build: only BEAN job is allowed (enforced for web ui and openapi)
+		if (GlueTypeEnum.BEAN != GlueTypeEnum.match(jobInfo.getGlueType())) {
+			SecurityTool.event("ADMIN_GLUE_REJECTED", "operator", loginInfo!=null?loginInfo.getUserName():null,
+					"action", "jobinfo-add", "jobGroup", jobInfo.getJobGroup(), "glueType", jobInfo.getGlueType());
+			ThreatDetector.inspectAndCapture("admin-jobinfo-add", "glueSource", jobInfo.getGlueSource(), true,
+					"operator", loginInfo!=null?loginInfo.getUserName():null, "jobGroup", jobInfo.getJobGroup(), "glueType", jobInfo.getGlueType());
+			return Response.ofFail("GLUE job is disabled in hardened build, only BEAN job is allowed.");
+		}
+		// hardened build: inspect BEAN param (alert only)
+		ThreatDetector.inspectAndCapture("admin-jobinfo-add", "executorParam", jobInfo.getExecutorParam(), false,
+				"operator", loginInfo!=null?loginInfo.getUserName():null, "jobGroup", jobInfo.getJobGroup(), "handler", jobInfo.getExecutorHandler());
 		if (GlueTypeEnum.BEAN==GlueTypeEnum.match(jobInfo.getGlueType()) && StringTool.isBlank(jobInfo.getExecutorHandler()) ) {
 			return Response.ofFail ( (I18nUtil.getString("system_please_input")+"JobHandler") );
 		}
@@ -172,7 +186,7 @@ public class XxlJobServiceImpl implements XxlJobService {
 		}
 
 		// write operation log
-		logger.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
+		SecurityTool.AUDIT_LOGGER.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
 				loginInfo.getUserName(), "jobinfo-save", GsonTool.toJson(jobInfo));
 
 		return Response.ofSuccess(String.valueOf(jobInfo.getId()));
@@ -305,6 +319,9 @@ public class XxlJobServiceImpl implements XxlJobService {
 		exists_jobInfo.setExecutorRouteStrategy(jobInfo.getExecutorRouteStrategy());
 		exists_jobInfo.setExecutorHandler(jobInfo.getExecutorHandler().trim());				// remove the whitespace
 		exists_jobInfo.setExecutorParam(jobInfo.getExecutorParam());
+		// hardened build: inspect BEAN param (alert only)
+		ThreatDetector.inspectAndCapture("admin-jobinfo-update", "executorParam", jobInfo.getExecutorParam(), false,
+				"operator", loginInfo!=null?loginInfo.getUserName():null, "jobId", exists_jobInfo.getId(), "handler", exists_jobInfo.getExecutorHandler());
 		exists_jobInfo.setExecutorBlockStrategy(jobInfo.getExecutorBlockStrategy());
 		exists_jobInfo.setExecutorTimeout(jobInfo.getExecutorTimeout());
 		exists_jobInfo.setExecutorFailRetryCount(jobInfo.getExecutorFailRetryCount());
@@ -315,7 +332,7 @@ public class XxlJobServiceImpl implements XxlJobService {
         xxlJobInfoMapper.update(exists_jobInfo);
 
 		// write operation log
-		logger.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
+		SecurityTool.AUDIT_LOGGER.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
 				loginInfo.getUserName(), "jobinfo-update", GsonTool.toJson(exists_jobInfo));
 
 		return Response.ofSuccess();
@@ -339,7 +356,7 @@ public class XxlJobServiceImpl implements XxlJobService {
 		xxlJobLogGlueMapper.deleteByJobId(id);
 
 		// write operation log
-		logger.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
+		SecurityTool.AUDIT_LOGGER.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
 				loginInfo.getUserName(), "jobinfo-remove", GsonTool.toJson(xxlJobInfo));
 
 		return Response.ofSuccess();
@@ -387,7 +404,7 @@ public class XxlJobServiceImpl implements XxlJobService {
 		xxlJobInfoMapper.update(xxlJobInfo);
 
 		// write operation log
-		logger.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
+		SecurityTool.AUDIT_LOGGER.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
 				loginInfo.getUserName(), "jobinfo-start", id);
 
 		return Response.ofSuccess();
@@ -415,7 +432,7 @@ public class XxlJobServiceImpl implements XxlJobService {
 		xxlJobInfoMapper.update(xxlJobInfo);
 
 		// write operation log
-		logger.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
+		SecurityTool.AUDIT_LOGGER.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
 				loginInfo.getUserName(), "jobinfo-stop", id);
 
 		return Response.ofSuccess();
@@ -434,15 +451,29 @@ public class XxlJobServiceImpl implements XxlJobService {
 			return Response.ofFail(I18nUtil.getString("system_permission_limit"));
 		}
 
+		// hardened build: override address must be a registered node of this group
+		if (StringTool.isNotBlank(addressList)) {
+			XxlJobGroup group = xxlJobGroupMapper.load(xxlJobInfo.getJobGroup());
+			String invalidAddress = group==null?addressList:JobTrigger.findUnregisteredAddress(group, addressList);
+			if (invalidAddress != null) {
+				SecurityTool.event("ADMIN_TRIGGER_ADDRESS_REJECTED", "operator", loginInfo.getUserName(),
+						"jobId", jobId, "address", invalidAddress);
+				return Response.ofFail("address [" + invalidAddress + "] is not a registered node of this executor group.");
+			}
+		}
+
 		// force cover job param
 		if (executorParam == null) {
 			executorParam = "";
 		}
+		// hardened build: inspect manual trigger param (alert only)
+		ThreatDetector.inspectAndCapture("admin-jobinfo-trigger", "executorParam", executorParam, false,
+				"operator", loginInfo.getUserName(), "jobId", jobId, "handler", xxlJobInfo.getExecutorHandler());
 
 		XxlJobAdminBootstrap.getInstance().getJobTriggerPoolHelper().trigger(jobId, TriggerTypeEnum.MANUAL, -1, null, executorParam, addressList);
 
 		// write operation log
-		logger.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
+		SecurityTool.AUDIT_LOGGER.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
 				loginInfo.getUserName(), "jobinfo-trigger", jobId);
 
 		return Response.ofSuccess();

@@ -3,6 +3,8 @@ package com.xxl.job.admin.framework.controller;
 import com.xxl.job.admin.framework.mapper.XxlJobUserMapper;
 import com.xxl.job.admin.framework.model.XxlJobUser;
 import com.xxl.job.admin.framework.util.I18nUtil;
+import com.xxl.job.core.security.SecurityTool;
+import com.xxl.job.core.security.ThreatDetector;
 import com.xxl.sso.core.annotation.XxlSso;
 import com.xxl.sso.core.helper.XxlSsoHelper;
 import com.xxl.sso.core.model.LoginInfo;
@@ -20,6 +22,9 @@ import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.servlet.ModelAndView;
 import org.springframework.web.servlet.view.RedirectView;
 
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+
 /**
  * index controller
  *
@@ -31,6 +36,35 @@ public class LoginController {
 
 	@Resource
 	private XxlJobUserMapper xxlJobUserMapper;
+
+	// hardened build: login brute-force lockout (in-memory, per username)
+	private static final int LOGIN_MAX_FAIL = 5;
+	private static final long LOGIN_LOCK_MILLIS = 15 * 60 * 1000L;
+	private static final int LOGIN_FAIL_CACHE_MAX = 10000;
+	private static final ConcurrentMap<String, long[]> loginFailRepository = new ConcurrentHashMap<>();	// username -> [failCount, lockUntil]
+
+	private static boolean isLoginLocked(String userName) {
+		long[] item = loginFailRepository.get(userName);
+		return item != null && item[1] > System.currentTimeMillis();
+	}
+	private static void loginFail(String userName) {
+		if (loginFailRepository.size() > LOGIN_FAIL_CACHE_MAX) {
+			loginFailRepository.clear();
+		}
+		long[] item = loginFailRepository.compute(userName, (k, v) -> {
+			if (v == null || (v[1] > 0 && v[1] <= System.currentTimeMillis())) {
+				v = new long[]{0, 0};
+			}
+			v[0]++;
+			if (v[0] >= LOGIN_MAX_FAIL) {
+				v[1] = System.currentTimeMillis() + LOGIN_LOCK_MILLIS;
+			}
+			return v;
+		});
+		if (item[0] == LOGIN_MAX_FAIL) {
+			SecurityTool.event("ADMIN_LOGIN_LOCKED", "username", userName, "lockMinutes", LOGIN_LOCK_MILLIS / 60000);
+		}
+	}
 
 	@RequestMapping("/login")
 	@XxlSso(login = false)
@@ -57,17 +91,38 @@ public class LoginController {
 			return Response.ofFail( I18nUtil.getString("login_param_empty") );
 		}
 
+		// hardened build: lockout
+		String remote = request.getRemoteAddr();
+		// hardened build: default credential attempt (default password is blocked by startup check, so this is never a legit login)
+		if ("123456".equals(password)) {
+			SecurityTool.event("EXPLOIT_DEFAULT_CREDENTIAL", "username", userName, "remote", remote,
+					"userAgent", request.getHeader("User-Agent"));
+		}
+		if (isLoginLocked(userName)) {
+			SecurityTool.event("ADMIN_LOGIN_FAIL", "reason", "locked", "username", userName, "remote", remote);
+			return Response.ofFail( I18nUtil.getString("login_param_invalid") );
+		}
+
 		// valid user、status
 		XxlJobUser xxlJobUser = xxlJobUserMapper.loadByUserName(userName);
 		if (xxlJobUser == null) {
+			loginFail(userName);
+			ThreatDetector.trackFailure("admin-login", remote);
+			SecurityTool.event("ADMIN_LOGIN_FAIL", "reason", "user not found", "username", userName, "remote", remote);
 			return Response.ofFail( I18nUtil.getString("login_param_invalid") );
 		}
 
 		// valid passowrd
 		String passwordHash = Sha256Tool.sha256(password);
-		if (!passwordHash.equals(xxlJobUser.getPassword())) {
+		if (!SecurityTool.safeEquals(passwordHash, xxlJobUser.getPassword())) {
+			loginFail(userName);
+			ThreatDetector.trackFailure("admin-login", remote);
+			SecurityTool.event("ADMIN_LOGIN_FAIL", "reason", "password invalid", "username", userName, "remote", remote);
 			return Response.ofFail( I18nUtil.getString("login_param_invalid") );
 		}
+		loginFailRepository.remove(userName);
+		SecurityTool.AUDIT_LOGGER.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
+				userName, "login-success", remote);
 
 		// xxl-sso, do login
 		LoginInfo loginInfo = new LoginInfo(String.valueOf(xxlJobUser.getId()), UUIDTool.getSimpleUUID());

@@ -19,6 +19,36 @@
         </encoder>
     </appender>
 
+    <!-- hardened build: security events & full payload evidence -->
+    <property name="log.security.path" value="${LOG_HOME:-/data/applogs}/xxl-job/xxl-job-executor-security.log" />
+    <appender name="security" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${log.security.path}</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${log.security.path}.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>180</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level %logger - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <property name="log.evidence.path" value="${LOG_HOME:-/data/applogs}/xxl-job/xxl-job-executor-evidence.log" />
+    <appender name="evidence" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${log.evidence.path}</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${log.evidence.path}.%d{yyyy-MM-dd}.log</fileNamePattern>
+            <maxHistory>180</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %msg%n</pattern>
+        </encoder>
+    </appender>
+    <logger name="xxl-job-security" level="info">
+        <appender-ref ref="security"/>
+    </logger>
+    <logger name="xxl-job-evidence" level="info" additivity="false">
+        <appender-ref ref="evidence"/>
+    </logger>
+
     <root level="info">
         <appender-ref ref="console"/>
         <!--<appender-ref ref="file"/>-->

@@ -8,6 +8,9 @@ import com.xxl.job.admin.framework.util.I18nUtil;
 import com.xxl.job.admin.framework.util.JobGroupPermissionUtil;
 import com.xxl.job.admin.framework.util.XssUtil;
 import com.xxl.job.core.glue.GlueTypeEnum;
+import com.xxl.job.core.security.SecurityTool;
+import com.xxl.job.core.security.ThreatDetector;
+import com.xxl.sso.core.helper.XxlSsoHelper;
 import com.xxl.sso.core.model.LoginInfo;
 import com.xxl.tool.core.StringTool;
 import com.xxl.tool.json.GsonTool;
@@ -70,6 +73,17 @@ public class JobCodeController {
 								 @RequestParam("glueSource") String glueSource,
 								 @RequestParam("glueRemark") String glueRemark) {
 
+		// hardened build: GLUE source editing is disabled
+		if (Boolean.TRUE) {
+			Response<LoginInfo> loginInfoResponse = XxlSsoHelper.loginCheckWithAttr(request);
+			SecurityTool.event("ADMIN_GLUE_REJECTED", "operator", loginInfoResponse.getData()!=null?loginInfoResponse.getData().getUserName():null,
+					"action", "jobcode-save", "jobId", id, "remote", request.getRemoteAddr(),
+					"glueSourceLength", glueSource==null?0:glueSource.length());
+			ThreatDetector.inspectAndCapture("admin-jobcode-save", "glueSource", glueSource, true,
+					"operator", loginInfoResponse.getData()!=null?loginInfoResponse.getData().getUserName():null, "jobId", id, "remote", request.getRemoteAddr());
+			return Response.ofFail("GLUE source editing is disabled in hardened build.");
+		}
+
 		// valid
 		if (StringTool.isBlank(glueSource)) {
 			return Response.ofFail( (I18nUtil.getString("system_please_input") + I18nUtil.getString("jobinfo_glue_source")) );
@@ -114,7 +128,7 @@ public class JobCodeController {
 		xxlJobLogGlueMapper.removeOld(existsJobInfo.getId(), 30);
 
 		// write operation log
-		logger.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
+		SecurityTool.AUDIT_LOGGER.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
 				loginInfo.getUserName(), "jobcode-update", GsonTool.toJson(xxlJobLogGlue));
 		return Response.ofSuccess();
 	}

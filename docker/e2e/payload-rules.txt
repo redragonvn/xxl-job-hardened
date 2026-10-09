@@ -1,0 +1,3 @@
+# SOC-maintained payload rules: rule_id | SEVERITY | java-regex
+# e2e test uses a harmless marker only; replace / extend with your organization's detection content.
+e2e_test_marker | CRITICAL | XXLJOB-E2E-MARKER-[0-9]+

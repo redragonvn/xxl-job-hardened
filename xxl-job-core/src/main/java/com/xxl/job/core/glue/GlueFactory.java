@@ -50,6 +50,10 @@ public class GlueFactory {
 	 * @return IJobHandler
 	 */
 	public IJobHandler loadNewInstance(String codeSource) throws Exception{
+		// hardened build: dynamic groovy code loading is disabled
+		if (Boolean.TRUE) {
+			throw new UnsupportedOperationException(">>>>>>>>>>> xxl-glue, GLUE(Java) is disabled in hardened build.");
+		}
 		if (StringTool.isNotBlank(codeSource)) {
 			Class<?> clazz = getCodeSourceClass(codeSource);
 			if (clazz != null) {

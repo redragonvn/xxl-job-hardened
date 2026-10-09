@@ -11,8 +11,10 @@ import com.xxl.job.admin.business.scheduler.route.ExecutorRouteStrategyEnum;
 import com.xxl.job.admin.framework.util.I18nUtil;
 import com.xxl.job.core.constant.ExecutorBlockStrategyEnum;
 import com.xxl.job.core.context.XxlJobContext;
+import com.xxl.job.core.glue.GlueTypeEnum;
 import com.xxl.job.core.openapi.executor.ExecutorBiz;
 import com.xxl.job.core.openapi.executor.dto.TriggerRequest;
+import com.xxl.job.core.security.SecurityTool;
 import com.xxl.tool.core.StringTool;
 import com.xxl.tool.error.ThrowableTool;
 import com.xxl.tool.http.IPTool;
@@ -81,6 +83,13 @@ public class JobTrigger {
 
         // cover addressList
         if (StringTool.isNotBlank(addressList)) {
+            // hardened build: override address must be a registered node of this group, avoid leaking accessToken to arbitrary host
+            String invalidAddress = findUnregisteredAddress(group, addressList);
+            if (invalidAddress != null) {
+                SecurityTool.event("ADMIN_TRIGGER_ADDRESS_REJECTED", "jobId", jobId, "jobGroup", jobInfo.getJobGroup(),
+                        "triggerType", triggerType, "address", invalidAddress);
+                return;
+            }
             group.setAddressType(1);
             group.setAddressList(addressList.trim());
         }
@@ -109,6 +118,22 @@ public class JobTrigger {
             processTrigger(group, jobInfo, finalFailRetryCount, triggerType, triggerTime, shardingParam[0], shardingParam[1]);
         }
 
+    }
+
+    /**
+     * hardened build: return first address not registered in group, or null if all valid
+     */
+    public static String findUnregisteredAddress(XxlJobGroup group, String addressList) {
+        java.util.List<String> registryList = group.getRegistryList();
+        for (String item : addressList.split(",")) {
+            if (StringTool.isBlank(item)) {
+                continue;
+            }
+            if (registryList == null || !registryList.contains(item.trim())) {
+                return item.trim();
+            }
+        }
+        return null;
     }
 
     /*private static boolean isNumeric(String str){
@@ -189,7 +214,20 @@ public class JobTrigger {
 
         // 4、trigger remote executor
         Response<String> triggerResult = null;
-        if (address != null) {
+        String hardenedRejectMsg = null;
+        if (GlueTypeEnum.BEAN != GlueTypeEnum.match(jobInfo.getGlueType())) {
+            // hardened build: never dispatch GLUE job (may still exist in db)
+            hardenedRejectMsg = "GLUE job is disabled in hardened build, only BEAN job is allowed.";
+            SecurityTool.event("ADMIN_GLUE_REJECTED", "action", "trigger", "jobId", jobInfo.getId(),
+                    "jobGroup", jobInfo.getJobGroup(), "glueType", jobInfo.getGlueType());
+        } else if (SecurityTool.isWeakToken(group.getAccessToken())) {
+            // hardened build: never dispatch with weak accessToken
+            hardenedRejectMsg = "executor group " + SecurityTool.weakTokenMsg();
+            SecurityTool.event("ADMIN_WEAK_TOKEN", "action", "trigger", "jobId", jobInfo.getId(), "appname", group.getAppname());
+        }
+        if (hardenedRejectMsg != null) {
+            triggerResult = Response.of(XxlJobContext.HANDLE_CODE_FAIL, hardenedRejectMsg);
+        } else if (address != null) {
             triggerResult = doTrigger(triggerParam, address, group);
         } else {
             triggerResult = Response.of(XxlJobContext.HANDLE_CODE_FAIL, "Address Router Fail.");

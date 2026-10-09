@@ -4,12 +4,14 @@ import com.xxl.job.admin.framework.constant.Consts;
 import com.xxl.job.admin.business.model.XxlJobGroup;
 import com.xxl.job.admin.business.model.XxlJobRegistry;
 import com.xxl.job.admin.framework.util.I18nUtil;
+import com.xxl.job.admin.framework.util.JobGroupPermissionUtil;
 import com.xxl.job.admin.business.mapper.XxlJobGroupMapper;
 import com.xxl.job.admin.business.mapper.XxlJobInfoMapper;
 import com.xxl.job.admin.business.mapper.XxlJobRegistryMapper;
 import com.xxl.job.admin.framework.util.XssUtil;
 import com.xxl.job.core.constant.Const;
 import com.xxl.job.core.constant.RegistTypeEnum;
+import com.xxl.job.core.security.SecurityTool;
 import com.xxl.sso.core.annotation.XxlSso;
 import com.xxl.tool.core.CollectionTool;
 import com.xxl.tool.core.StringTool;
@@ -17,6 +19,7 @@ import com.xxl.tool.http.HttpTool;
 import com.xxl.tool.response.PageModel;
 import com.xxl.tool.response.Response;
 import jakarta.annotation.Resource;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -71,6 +74,11 @@ public class JobGroupController {
 	@ResponseBody
 	@XxlSso(role = Consts.ADMIN_ROLE)
 	public Response<String> insert(XxlJobGroup xxlJobGroup){
+
+		// hardened build: valid accessToken strength
+		if (SecurityTool.isWeakToken(xxlJobGroup.getAccessToken())) {
+			return Response.ofFail("AccessToken: " + SecurityTool.weakTokenMsg());
+		}
 
 		// valid appname
 		if (StringTool.isBlank(xxlJobGroup.getAppname())) {
@@ -132,6 +140,11 @@ public class JobGroupController {
 		XxlJobGroup exists = xxlJobGroupMapper.load(xxlJobGroup.getId());
 		if (exists == null) {
 			return Response.ofFail(I18nUtil.getString("system_opt_error"));
+		}
+
+		// hardened build: valid accessToken strength
+		if (SecurityTool.isWeakToken(xxlJobGroup.getAccessToken())) {
+			return Response.ofFail("AccessToken: " + SecurityTool.weakTokenMsg());
 		}
 
 		// valid title
@@ -239,8 +252,15 @@ public class JobGroupController {
 	@RequestMapping("/loadById")
 	@ResponseBody
 	//@XxlSso(role = Consts.ADMIN_ROLE)		// open to default user, support show registry nodes
-	public Response<XxlJobGroup> loadById(@RequestParam("id") int id){
+	public Response<XxlJobGroup> loadById(HttpServletRequest request, @RequestParam("id") int id){
+		// hardened build: valid jobGroup permission
+		JobGroupPermissionUtil.validJobGroupPermission(request, id);
+
 		XxlJobGroup jobGroup = xxlJobGroupMapper.load(id);
+		if (jobGroup != null) {
+			// hardened build: never expose accessToken to non-admin user
+			jobGroup.setAccessToken(null);
+		}
 		return jobGroup!=null?Response.ofSuccess(jobGroup):Response.ofFail();
 	}
 

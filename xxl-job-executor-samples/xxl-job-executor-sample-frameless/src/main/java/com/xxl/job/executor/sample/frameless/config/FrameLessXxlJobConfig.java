@@ -38,13 +38,14 @@ public class FrameLessXxlJobConfig {
         xxlJobExecutor.setTimeout(Integer.parseInt(xxlJobProp.getProperty("xxl.job.admin.timeout")));
         xxlJobExecutor.setEnabled(Boolean.parseBoolean(xxlJobProp.getProperty("xxl.job.executor.enabled")));
         xxlJobExecutor.setAppname(xxlJobProp.getProperty("xxl.job.executor.appname"));
-        xxlJobExecutor.setAccessToken(xxlJobProp.getProperty("xxl.job.executor.accessToken"));
+        String envAccessToken = System.getenv("XXL_JOB_ACCESS_TOKEN");
+        xxlJobExecutor.setAccessToken(envAccessToken!=null && !envAccessToken.isBlank()?envAccessToken:xxlJobProp.getProperty("xxl.job.executor.accessToken"));
         xxlJobExecutor.setIp(xxlJobProp.getProperty("xxl.job.executor.ip"));
         xxlJobExecutor.setPort(Integer.parseInt(xxlJobProp.getProperty("xxl.job.executor.port")));
         xxlJobExecutor.setAddress(xxlJobProp.getProperty("xxl.job.executor.address"));
         xxlJobExecutor.setLogPath(xxlJobProp.getProperty("xxl.job.executor.logpath"));
         xxlJobExecutor.setLogRetentionDays(Integer.parseInt(xxlJobProp.getProperty("xxl.job.executor.logretentiondays")));
-        xxlJobExecutor.setGlueEnabled(Boolean.parseBoolean(xxlJobProp.getProperty("xxl.job.executor.glueenabled")));
+        xxlJobExecutor.setHandlerAllowlist(xxlJobProp.getProperty("xxl.job.executor.handlerallowlist"));
 
         // registry job bean
         xxlJobExecutor.setXxlJobBeanList(List.of(new SampleXxlJob()));

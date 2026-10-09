@@ -2,6 +2,8 @@ package com.xxl.job.core.server;
 
 import com.xxl.job.core.constant.Const;
 import com.xxl.job.core.executor.XxlJobExecutor;
+import com.xxl.job.core.security.SecurityTool;
+import com.xxl.job.core.security.ThreatDetector;
 import com.xxl.job.core.openapi.executor.ExecutorBiz;
 import com.xxl.job.core.openapi.executor.dto.IdleBeatRequest;
 import com.xxl.job.core.openapi.executor.dto.KillRequest;
@@ -164,13 +166,14 @@ public class EmbedServer {
             boolean keepAlive = HttpUtil.isKeepAlive(msg);
             String accessToken = msg.headers().get(Const.XXL_JOB_ACCESS_TOKEN);
             String appname = msg.headers().get(Const.XXL_JOB_APPNAME);
+            String remoteAddress = String.valueOf(ctx.channel().remoteAddress());
 
             // invoke
             bizThreadPool.execute(new Runnable() {
                 @Override
                 public void run() {
                     // do invoke
-                    Object responseObj = dispatchRequest(httpMethod, uri, requestData, accessToken, appname);
+                    Object responseObj = dispatchRequest(httpMethod, uri, requestData, accessToken, appname, remoteAddress);
 
                     // to json
                     String responseJson = GsonTool.toJson(responseObj);
@@ -181,24 +184,79 @@ public class EmbedServer {
             });
         }
 
+        private static final java.util.Set<String> KNOWN_URIS = java.util.Set.of("/beat", "/idleBeat", "/trigger", "/kill", "/log");
+        private static final java.util.Set<String> LEGACY_EXPLOIT_URIS = java.util.Set.of("/run", "/run/");
+
+        /**
+         * hardened build: capture glueSource / executorParams of a rejected (unauthenticated / probe) trigger as evidence
+         */
+        private void captureTriggerPayload(String where, String requestData, Object... context) {
+            if (StringTool.isBlank(requestData)) {
+                return;
+            }
+            TriggerRequest triggerParam = null;
+            try {
+                triggerParam = GsonTool.fromJson(requestData, TriggerRequest.class);
+            } catch (Throwable e) {
+                // not json, keep raw body
+            }
+            if (triggerParam != null && (triggerParam.getGlueSource() != null || triggerParam.getExecutorParams() != null)) {
+                ThreatDetector.inspectAndCapture(where, "glueSource", triggerParam.getGlueSource(), true, context);
+                ThreatDetector.inspectAndCapture(where, "executorParam", triggerParam.getExecutorParams(), false, context);
+            } else {
+                ThreatDetector.inspectAndCapture(where, "requestBody", requestData, true, context);
+            }
+        }
+
         /**
          * dispatch request
          */
-        private Object dispatchRequest(HttpMethod httpMethod, String uri, String requestData, String accessToken, String appname) {
+        private Object dispatchRequest(HttpMethod httpMethod, String uri, String requestData, String accessToken, String appname, String remoteAddress) {
             // valid
             if (HttpMethod.POST != httpMethod) {
+                // hardened build: admin only sends POST, anything else is a scanner / probe
+                SecurityTool.event("EXECUTOR_SCAN", "reason", "http method", "method", httpMethod, "remote", remoteAddress, "uri", uri);
+                ThreatDetector.trackFailure("executor-scan", remoteAddress);
                 return Response.ofFail("invalid request, HttpMethod not support.");
             }
             if (uri == null || uri.trim().isEmpty()) {
                 return Response.ofFail( "invalid request, uri-mapping empty.");
             }
+            // hardened build: unknown uri, detect before auth
+            if (!KNOWN_URIS.contains(uri)) {
+                if (LEGACY_EXPLOIT_URIS.contains(uri)) {
+                    // "/run" is the legacy (<=2.2) executor api targeted by public unauthenticated GLUE exploits
+                    SecurityTool.event("EXECUTOR_EXPLOIT_PROBE", "remote", remoteAddress, "uri", uri, "appname", appname);
+                    captureTriggerPayload("executor-legacy-probe", requestData, "remote", remoteAddress, "uri", uri);
+                } else {
+                    SecurityTool.event("EXECUTOR_SCAN", "reason", "unknown uri", "remote", remoteAddress, "uri", uri);
+                }
+                ThreatDetector.trackFailure("executor-scan", remoteAddress);
+                return Response.ofFail( "invalid request, uri-mapping(" + uri + ") not found.");
+            }
 
             // valid access token
             if (StringTool.isBlank(accessToken) || StringTool.isBlank(appname)) {
+                SecurityTool.event("EXECUTOR_AUTH_FAIL", "reason", "token or appname empty", "remote", remoteAddress, "uri", uri);
+                ThreatDetector.trackFailure("executor-auth", remoteAddress);
+                if ("/trigger".equals(uri)) {
+                    captureTriggerPayload("executor-trigger-unauth", requestData, "remote", remoteAddress);
+                }
                 return Response.ofFail("invalid request, accessToken or appname is empty.");
             }
-            if (!(accessToken.equals(xxlJobExecutor.getAccessToken())
-                    && appname.equals(xxlJobExecutor.getAppname()))) {
+            // hardened build: constant-time compare
+            boolean tokenValid = SecurityTool.safeEquals(accessToken, xxlJobExecutor.getAccessToken());
+            boolean appnameValid = appname.equals(xxlJobExecutor.getAppname());
+            if (!(tokenValid && appnameValid)) {
+                SecurityTool.event("EXECUTOR_AUTH_FAIL", "reason", tokenValid?"appname invalid":"token invalid",
+                        "remote", remoteAddress, "uri", uri, "appname", appname);
+                ThreatDetector.trackFailure("executor-auth", remoteAddress);
+                if (!tokenValid) {
+                    ThreatDetector.inspectPresentedToken(accessToken, "executor", "remote", remoteAddress, "uri", uri, "appname", appname);
+                }
+                if ("/trigger".equals(uri)) {
+                    captureTriggerPayload("executor-trigger-unauth", requestData, "remote", remoteAddress);
+                }
                 return Response.ofFail("invalid request, accessToken or appname invalid.");
             }
 

@@ -47,6 +47,11 @@ public class ScriptJobHandler extends IJobHandler {
     @Override
     public void execute() throws Exception {
 
+        // hardened build: script execution is disabled
+        if (Boolean.TRUE) {
+            throw new UnsupportedOperationException("GLUE script is disabled in hardened build.");
+        }
+
         // valid
         if (!glueType.isScript()) {
             XxlJobHelper.handleFail("glueType["+ glueType +"] invalid.");
