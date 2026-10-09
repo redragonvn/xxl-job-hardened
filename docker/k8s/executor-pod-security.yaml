@@ -1,0 +1,60 @@
+# xxl-job hardened build: reference pod / container security settings for an executor Deployment (merge into yours).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xxl-job-executor-sample
+  labels:
+    app.kubernetes.io/component: xxl-job-executor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: xxl-job-executor
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: xxl-job-executor
+    spec:
+      automountServiceAccountToken: false       # executor needs no k8s api access
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: executor
+          image: registry.example.internal/xxl-job-executor-sample-springboot:3.5.1-hardened.1
+          ports:
+            - containerPort: 9999                # ClusterIP only: no hostPort / NodePort / LoadBalancer / Ingress
+          env:
+            - name: XXL_JOB_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef: {name: xxl-job-executor, key: access-token}
+            - name: XXL_JOB_SECURITY_ALERT_WEBHOOK
+              valueFrom:
+                secretKeyRef: {name: xxl-job-executor, key: alert-webhook, optional: true}
+            - name: XXL_JOB_SECURITY_CANARY_TOKENS
+              valueFrom:
+                secretKeyRef: {name: xxl-job-executor, key: canary-tokens, optional: true}
+            - name: XXL_JOB_SECURITY_PAYLOAD_RULES
+              value: /etc/xxl-job/payload-rules.txt
+            - name: PARAMS
+              value: >-
+                --xxl.job.admin.addresses=http://xxl-job-admin.xxl-job.svc:8080
+                --xxl.job.executor.handlerallowlist=demoJobHandler,shardingJobHandler
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - {name: logs, mountPath: /data/applogs}
+            - {name: tmp, mountPath: /tmp}
+            - {name: rules, mountPath: /etc/xxl-job, readOnly: true}
+      volumes:
+        - {name: logs, emptyDir: {}}            # ship logs with a sidecar / node agent
+        - {name: tmp, emptyDir: {medium: Memory, sizeLimit: 256Mi}}
+        - name: rules
+          configMap: {name: xxl-job-payload-rules}

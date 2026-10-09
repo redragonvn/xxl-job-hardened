@@ -1,0 +1,58 @@
+# xxl-job hardened build: reference NetworkPolicy (P0). Adjust labels / namespaces / ports to your deployment.
+# 1) only xxl-job-admin pods may reach the executor port
+# 2) executor egress limited to admin + DNS (+ add the internal services your BEAN handlers really need)
+# Verify with a real connection test from another pod, not only by reading the manifest.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: xxl-job-executor-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: xxl-job-executor
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: xxl-job
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: xxl-job-admin
+      ports:
+        - protocol: TCP
+          port: 9999
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: xxl-job-executor-egress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: xxl-job-executor
+  policyTypes: [Egress]
+  egress:
+    # admin (registry / callback)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: xxl-job
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: xxl-job-admin
+      ports:
+        - protocol: TCP
+          port: 8080
+    # dns
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # TODO: add only the internal services (db / redis / api) your BEAN handlers need

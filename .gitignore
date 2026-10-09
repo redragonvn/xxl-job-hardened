@@ -18,3 +18,7 @@ package-lock.json
 .claude
 .specify
 specs
+# hardened build: deployment secrets
+docker/.env
+docker/e2e/out/
+docker/e2e/.env

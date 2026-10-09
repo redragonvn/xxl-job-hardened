@@ -1,0 +1,2 @@
+# SOC-maintained payload rules: rule_id | SEVERITY | java-regex   (hot reload)
+# This build ships no attack signatures. Deploy your organization's detection content here.

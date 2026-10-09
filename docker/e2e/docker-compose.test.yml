@@ -1,0 +1,9 @@
+# test override for ../docker-compose.yml, used by run_deploy_test.sh (paths are relative to docker/)
+services:
+  webhook:
+    image: python:3.12-alpine
+    command: ["python", "-u", "/t/webhook.py"]
+    volumes:
+      - ./e2e/webhook.py:/t/webhook.py:ro
+      - ./e2e/out:/out
+    networks: [xxl-job-network]

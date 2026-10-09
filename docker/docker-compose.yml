@@ -1,75 +1,102 @@
-# docker-compose version
-version: '3.8'
+# xxl-job hardened deployment (single host / reference). See doc/HARDENING.md.
+#
+#   cp .env.example .env   # fill in every value, keep .env out of git
+#   docker compose up -d --build
+#
+# - mysql and executor ports are NOT published; only admin is reachable from outside
+# - admin connects with a dedicated db user, not root
+# - containers run non-root, read-only rootfs, all capabilities dropped
+name: xxl-job
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  tmpfs:
+    - /tmp:size=256m
+  restart: unless-stopped
 
 services:
   mysql:
     image: mysql:8.4
-    container_name: xxl-job-mysql
     environment:
-      # 1、数据库密码设置，需要与Admin中配置一致：
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      # 2、数据库实例名称，需要与Admin中配置一致；
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD in .env}
       MYSQL_DATABASE: xxl_job
-    ports:
-      - "3306:3306"
+      MYSQL_USER: ${MYSQL_USER:-xxl_job}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}
     volumes:
-      # 说明：仅数据库首次初始化时执行；
+      # first init only
       - ../doc/db/tables_xxl_job.sql:/docker-entrypoint-initdb.d/tables_xxl_job.sql:ro
-      # 3、数据库持久化目录位置，建议自定义：
-      - ${MYSQL_PATH}/conf:/etc/mysql/conf.d
-      - ${MYSQL_PATH}/logs:/var/log/mysql
-      - ${MYSQL_PATH}/data:/var/lib/mysql
-    command: >-
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
+      - mysql-data:/var/lib/mysql
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      timeout: 20s
-      retries: 10
-    networks:
-      - xxl-job-network
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    restart: unless-stopped
+    networks: [xxl-job-network]
 
   xxl-job-admin:
-    # 4、本地Build设置，如果期望使用推动DockerHub的镜像，可以注释当前启用的image、build配置，并启用如下设置版本的image配置；
-    #image: xuxueli/xxl-job-admin:{version}
-    image: xuxueli/xxl-job-admin:local
+    <<: *hardening
+    image: xxl-job-admin:3.5.1-hardened.1
     build:
       context: ../xxl-job-admin
-      dockerfile: Dockerfile
-    container_name: xxl-job-admin
     environment:
-      # 5、数据库密码设置，需要与上文Mysql中保持一致：
+      LOG_HOME: /data/applogs
+      # one-time reset of default admin password (min 12 chars); remove after first successful start
+      XXL_JOB_SECURITY_INIT_ADMIN_PASSWORD: ${XXL_JOB_INIT_ADMIN_PASSWORD:-}
       PARAMS: >-
-        --spring.datasource.url=jdbc:mysql://mysql:3306/xxl_job?useUnicode=true&characterEncoding=UTF-8&autoReconnect=true&serverTimezone=Asia/Shanghai
-        --spring.datasource.username=root 
-        --spring.datasource.password=${MYSQL_ROOT_PASSWORD}
-        --server.port=${XXL_JOB_ADMIN_PORT}
-        --server.servlet.context-path=${XXL_JOB_ADMIN_CONTEXT_PATH}
+        --spring.datasource.url=jdbc:mysql://mysql:3306/xxl_job?useUnicode=true&characterEncoding=UTF-8&autoReconnect=true&serverTimezone=UTC
+        --spring.datasource.username=${MYSQL_USER:-xxl_job}
+        --spring.datasource.password=${MYSQL_PASSWORD}
+        --server.port=8080
+        --xxl.job.registry.allowed-cidrs=${XXL_JOB_REGISTRY_ALLOWED_CIDRS:?set XXL_JOB_REGISTRY_ALLOWED_CIDRS in .env}
+        --xxl.job.security.alert.webhook-url=${XXL_JOB_ALERT_WEBHOOK:-}
+        --xxl.job.security.alert.min-severity=${XXL_JOB_ALERT_MIN_SEVERITY:-HIGH}
+        --xxl.job.security.payload-rules=/etc/xxl-job/payload-rules.txt
+        --xxl.job.security.canary-tokens=${XXL_JOB_CANARY_TOKENS:-}
+        --xxl.job.security.metrics-token=${XXL_JOB_METRICS_TOKEN:-}
     ports:
-      - "${XXL_JOB_ADMIN_PORT}:${XXL_JOB_ADMIN_PORT}"
+      - "${XXL_JOB_ADMIN_BIND:-127.0.0.1}:${XXL_JOB_ADMIN_PORT:-8080}:8080"
+    volumes:
+      - admin-logs:/data/applogs
+      - ${XXL_JOB_PAYLOAD_RULES_FILE:-./payload-rules.txt}:/etc/xxl-job/payload-rules.txt:ro
     depends_on:
-      mysql:
-        condition: service_healthy
-    networks:
-      - xxl-job-network
+      mysql: {condition: service_healthy}
+    networks: [xxl-job-network]
 
   xxl-job-executor-sample-springboot:
-    image: xuxueli/xxl-job-executor-sample-springboot:local
+    <<: *hardening
+    image: xxl-job-executor-sample-springboot:3.5.1-hardened.1
     build:
       context: ../xxl-job-executor-samples/xxl-job-executor-sample-springboot
-      dockerfile: Dockerfile
-    container_name: xxl-job-executor-sample-springboot
     environment:
+      LOG_HOME: /data/applogs
+      XXL_JOB_ACCESS_TOKEN: ${XXL_JOB_EXECUTOR_TOKEN:?set XXL_JOB_EXECUTOR_TOKEN in .env}
+      XXL_JOB_SECURITY_ALERT_WEBHOOK: ${XXL_JOB_ALERT_WEBHOOK:-}
+      XXL_JOB_SECURITY_ALERT_MIN_SEVERITY: ${XXL_JOB_ALERT_MIN_SEVERITY:-HIGH}
+      XXL_JOB_SECURITY_PAYLOAD_RULES: /etc/xxl-job/payload-rules.txt
+      XXL_JOB_SECURITY_CANARY_TOKENS: ${XXL_JOB_CANARY_TOKENS:-}
       PARAMS: >-
-        --xxl.job.admin.addresses=http://xxl-job-admin:${XXL_JOB_ADMIN_PORT}${XXL_JOB_ADMIN_CONTEXT_PATH:-/}
-    ports:
-      - "9999:9999"
+        --xxl.job.admin.addresses=http://xxl-job-admin:8080
+        --xxl.job.executor.handlerallowlist=${XXL_JOB_HANDLER_ALLOWLIST:-demoJobHandler,shardingJobHandler}
+    # no published port: only containers on xxl-job-network (admin) can reach 9999
+    volumes:
+      - executor-logs:/data/applogs
+      - ${XXL_JOB_PAYLOAD_RULES_FILE:-./payload-rules.txt}:/etc/xxl-job/payload-rules.txt:ro
     depends_on:
-      xxl-job-admin:
-        condition: service_started
-    networks:
-      - xxl-job-network
+      xxl-job-admin: {condition: service_started}
+    networks: [xxl-job-network]
+
+volumes:
+  mysql-data:
+  admin-logs:
+  executor-logs:
 
 networks:
   xxl-job-network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${XXL_JOB_SUBNET:-172.30.0.0/24}

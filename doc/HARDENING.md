@@ -1,6 +1,8 @@
 # XXL-JOB Hardened Build
 
-Minimal-change fork of XXL-JOB 3.5.1-SNAPSHOT. No UI or database schema changes. All hardening is enforced on the backend and **fails closed**.
+Minimal-change fork of XXL-JOB 3.5.1-SNAPSHOT, released as **`3.5.1-hardened.1`** (Maven version of every module, Docker image tags, and the version shown in the admin UI). No UI or database schema changes. All hardening is enforced on the backend and **fails closed**.
+
+Every executor application must be rebuilt against `com.xuxueli:xxl-job-core:3.5.1-hardened.1`: the executor-side protections live in the core library. Publish the artifacts to your internal Maven repository under this version; an admin-only upgrade leaves old executors accepting GLUE.
 
 ## 1. What changed
 
@@ -16,7 +18,8 @@ Minimal-change fork of XXL-JOB 3.5.1-SNAPSHOT. No UI or database schema changes.
 | Executor registry | An executor can only register into **its own** group (`registryKey` == authenticated appname). The address must be http(s), and its host must match `xxl.job.registry.allowed-cidrs` if that is set. | `OpenApiController.validRegistry` |
 | Manual trigger address | The `addressList` override must be a registered node of the group. Before, it could send the group token to any host (token theft and SSRF). | `XxlJobServiceImpl.trigger`, `JobTrigger` |
 | Default admin | The admin refuses to start while user `admin` still has the default password `123456`, unless `xxl.job.security.init-admin-password` is provided to reset it. | `SecurityStartupCheck` |
-| Login | Locks the account for 15 minutes after 5 failures. Success and failure are audited. | `LoginController` |
+| Login | Locks a username **for the failing source IP** for 15 minutes after 5 failures, so a remote attacker cannot lock out a legitimate admin. Success and failure are audited. | `LoginController` |
+| Container / deploy | Non-root (uid 10001) images that copy one exact jar; hardened compose (read-only rootfs, no capabilities, no-new-privileges, only admin published, dedicated DB user, required secrets); Kubernetes reference NetworkPolicy and pod security. | `*/Dockerfile`, `docker/`, `docker/k8s/` |
 | Visibility | Security events go to the `xxl-job-security` logger and operation audit to the `xxl-job-audit` logger. The admin writes both to `xxl-job-admin-security.log`. Every event has a severity, a counter and a hash-chain field. | `SecurityTool`, `SecuritySeverity`, `logback.xml` |
 | Detection | Payload inspection with SOC rules, evidence capture, canary tokens, exploit fingerprints, brute-force and scan detection, privileged-change audit, GLUE inventory at startup. See section 5. | `ThreatDetector`, `SecurityAuditFilter`, `SecurityStartupCheck` |
 | Alerting / posture | Webhook alerts, an admin-only posture endpoint, and a Prometheus metrics endpoint. | `SecurityAlerter`, `SecurityController` |
@@ -68,6 +71,32 @@ Log files (under `LOG_HOME`, default `/data/applogs`):
 | `xxl-job/xxl-job-executor-evidence.log` | Full captured payloads (executor) | **IR team only** |
 
 Executor apps not based on the samples should add the `xxl-job-security` and `xxl-job-evidence` loggers to their own logback configuration (copy from `xxl-job-executor-sample-springboot/src/main/resources/logback.xml`).
+
+### Reverse proxy
+
+The client IP drives login lockout, brute-force detection and the security log. The default `server.forward-headers-strategy=none` ignores `X-Forwarded-For`, which is correct when the admin is reached directly. Behind an ingress or proxy, set `native` **and** trust only the proxy addresses, otherwise any client can spoof its IP:
+
+```properties
+server.forward-headers-strategy=native
+server.tomcat.remoteip.internal-proxies=10\\.0\\.0\\.15|10\\.0\\.0\\.16
+```
+
+### Health checks
+
+- **Executor: use a TCP probe on port 9999, never an HTTP probe.** The executor only accepts POST from the admin, so any HTTP GET on that port raises `EXECUTOR_SCAN` (HIGH) and sends an alert. That is intended: in production, an HTTP request to the executor port is a scanner. A TCP connect without a request raises nothing.
+- **Admin**: an HTTP GET on `/auth/login` (returns 200 without a session) is safe.
+
+### Deployment files
+
+| File | Purpose |
+|---|---|
+| `xxl-job-admin/Dockerfile`, `xxl-job-executor-samples/*/Dockerfile` | Non-root (uid 10001) images, exact jar, `exec java` so SIGTERM reaches the JVM. |
+| `docker/docker-compose.yml` + `docker/.env.example` | Hardened single-host reference deployment. `cp .env.example .env`, fill every value, never commit `.env`. |
+| `docker/payload-rules.txt` | Placeholder for the SOC rules file (ships empty). |
+| `docker/k8s/executor-networkpolicy.yaml` | **P0**: only admin pods may reach the executor port; executor egress limited. Adjust labels and namespaces. |
+| `docker/k8s/executor-pod-security.yaml` | Reference executor pod: non-root, read-only rootfs, no capabilities, no ServiceAccount token, secrets from a Secret. |
+
+Build: `mvn clean install -Dgpg.skip` (GPG signing is for upstream releases). Tests are skipped by default; run with `-Dmaven.test.skip=false`.
 
 ## 3. Migration checklist
 
@@ -183,15 +212,40 @@ SELECT id, username, role, permission FROM xxl_job_user;
 
 ## 6. Test status
 
-- The full build compiles with JDK 17 (`maven:3.9-eclipse-temurin-17` in Docker). Run with `-Dgpg.skip`. To run tests, add `-Dmaven.test.skip=false -Djunit-jupiter.version=6.0.3` (the upstream JUnit versions are misaligned).
-- Unit tests: `SecurityToolTest` and `ThreatDetectorTest`, 11 of 11 pass.
-- **Not yet done: end-to-end testing against running services.** `docker/e2e/` provides the environment (MySQL, admin, executor, a webhook receiver and a marker rules file); the `tester` service expects a test driver at `docker/e2e/e2e_test.py`, which is not included. Validate with your own test plan or a pentest of the hardened build. In particular, prove on the executor host that rejected GLUE payloads and rejected handlers never execute (e.g. a file the payload would create never appears), in addition to the log events.
+**Build and unit tests**: the full build compiles with JDK 17 (`maven:3.9-eclipse-temurin-17` in Docker). `SecurityToolTest` and `ThreatDetectorTest` pass 11 of 11, run with `-Dmaven.test.skip=false`.
+
+**Deployment and functional test**: `docker/e2e/run_deploy_test.sh` builds the images, deploys `docker/docker-compose.yml` with a test override (webhook receiver, marker rules file) and checks:
+
+| Area | Checks |
+|---|---|
+| Startup guards | Admin refuses to start with `admin/123456` and alerts; starts after the one-time reset; restarts cleanly once the init password is removed. Executor refuses `default_token`. |
+| Tokens | Weak group token rejected by the admin; strong token accepted; `loadById` does not return the token; no secret (tokens, admin password) appears in any container or security log. |
+| Function | Executor registers (with `REGISTRY_NEW_ADDRESS`); a BEAN job round trip succeeds (trigger 200, handle 200); UI shows `3.5.1-hardened.1`. |
+| Visibility | Posture reflects the real state; posture requires a session; metrics return 404 without a valid bearer token and serve Prometheus text with it; HIGH events reach the webhook, tagged with their source. |
+| Container | Admin and executor run as uid 10001, read-only rootfs, no capabilities; executor and MySQL ports not published; admin bound to 127.0.0.1; executor stops on SIGTERM within the grace period. |
+| Log integrity | Admin and executor security-log chains verify; a copy with one deleted line is detected as BROKEN. |
+
+Run it with `docker/e2e/run_deploy_test.sh` after `mvn clean install -Dgpg.skip`. Results and artifacts go to `docker/e2e/out/` (git-ignored).
+
+**Not covered here: negative security testing.** Attack-path cases (GLUE attempts through each API, token misuse, cross-group registration, trigger address override, rejected handlers, payload rules against real detection content) are not part of this test suite and must be validated by your own test plan or a pentest of the hardened build in staging. Prove on the executor host that rejected payloads never execute (e.g. a file the payload would create never appears), not only that the events are logged.
 
 ## 7. Not covered by this build (needs infrastructure or bigger changes)
 
-- NetworkPolicy/firewall so that only the Admin can reach the executor port. **Still P0**: do it at the infrastructure layer.
-- Executor running as non-root, read-only filesystem, no privileged ServiceAccount.
+- Applying the network restriction and runtime hardening in **your** environment: the files in `docker/k8s/` are references, and only the infrastructure can enforce them. **Still P0.**
 - Separate tokens for OpenAPI, registry and executor; token rotation with an overlap window; mTLS.
 - RBAC beyond admin/user, SSO/MFA, password hashing stronger than unsalted SHA-256.
 - Per-handler `executorParam` validation and approval workflow.
-- Login lockout and brute-force state are in memory, per admin instance; they reset on restart and are not shared across a cluster.
+- Login lockout and brute-force state are in memory, per admin instance; they reset on restart and are not shared across a cluster. A distributed password-guessing attack (many source IPs) is detected per source only; rely on SSO/MFA for strong protection.
+
+## 8. Go-live checklist (needs people / infrastructure)
+
+1. **Preserve evidence first**: run the queries in sections 3 and 5.4 on the current database and keep the output; the upgrade changes job state.
+2. **Pentest the hardened build in staging** (section 6, "Not covered here").
+3. **Publish** `3.5.1-hardened.1` artifacts to the internal Maven repository and the images to the internal registry.
+4. **Rebuild every executor application** against `xxl-job-core:3.5.1-hardened.1`; add the `xxl-job-security` / `xxl-job-evidence` loggers to non-sample executors; set `handlerallowlist`.
+5. **Apply the network restriction** (`docker/k8s/executor-networkpolicy.yaml` or firewall) and **verify with a real connection** from a non-admin pod/host.
+6. **Secrets**: rotate all executor group tokens; set the init admin password once, then remove it; set metrics token, canary tokens; store everything in a secret manager.
+7. **Proxy**: configure `server.forward-headers-strategy` / `internal-proxies` if the admin is behind an ingress, and confirm the real client IP appears in the security log.
+8. **SOC**: deploy the payload rules file, ship security logs to the SIEM, restrict evidence logs, configure the webhook, create alerts for CRITICAL / HIGH events, plant canary tokens and record where each one is.
+9. **Probes**: TCP probes only on the executor port (section 2, Health checks).
+10. **Rollout**: upgrade admin and all executors in the same window. Rolling back to upstream re-enables GLUE; keep the network restriction in place regardless.

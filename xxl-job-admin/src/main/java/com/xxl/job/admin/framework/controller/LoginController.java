@@ -37,11 +37,11 @@ public class LoginController {
 	@Resource
 	private XxlJobUserMapper xxlJobUserMapper;
 
-	// hardened build: login brute-force lockout (in-memory, per username)
+	// hardened build: login brute-force lockout (in-memory, per username + source ip, so a remote attacker can not lock out a legit admin)
 	private static final int LOGIN_MAX_FAIL = 5;
 	private static final long LOGIN_LOCK_MILLIS = 15 * 60 * 1000L;
 	private static final int LOGIN_FAIL_CACHE_MAX = 10000;
-	private static final ConcurrentMap<String, long[]> loginFailRepository = new ConcurrentHashMap<>();	// username -> [failCount, lockUntil]
+	private static final ConcurrentMap<String, long[]> loginFailRepository = new ConcurrentHashMap<>();	// username|ip -> [failCount, lockUntil]
 
 	private static boolean isLoginLocked(String userName) {
 		long[] item = loginFailRepository.get(userName);
@@ -62,7 +62,7 @@ public class LoginController {
 			return v;
 		});
 		if (item[0] == LOGIN_MAX_FAIL) {
-			SecurityTool.event("ADMIN_LOGIN_LOCKED", "username", userName, "lockMinutes", LOGIN_LOCK_MILLIS / 60000);
+			SecurityTool.event("ADMIN_LOGIN_LOCKED", "key", userName, "lockMinutes", LOGIN_LOCK_MILLIS / 60000);
 		}
 	}
 
@@ -98,7 +98,8 @@ public class LoginController {
 			SecurityTool.event("EXPLOIT_DEFAULT_CREDENTIAL", "username", userName, "remote", remote,
 					"userAgent", request.getHeader("User-Agent"));
 		}
-		if (isLoginLocked(userName)) {
+		String lockKey = userName + "|" + remote;
+		if (isLoginLocked(lockKey)) {
 			SecurityTool.event("ADMIN_LOGIN_FAIL", "reason", "locked", "username", userName, "remote", remote);
 			return Response.ofFail( I18nUtil.getString("login_param_invalid") );
 		}
@@ -106,7 +107,7 @@ public class LoginController {
 		// valid user、status
 		XxlJobUser xxlJobUser = xxlJobUserMapper.loadByUserName(userName);
 		if (xxlJobUser == null) {
-			loginFail(userName);
+			loginFail(lockKey);
 			ThreatDetector.trackFailure("admin-login", remote);
 			SecurityTool.event("ADMIN_LOGIN_FAIL", "reason", "user not found", "username", userName, "remote", remote);
 			return Response.ofFail( I18nUtil.getString("login_param_invalid") );
@@ -115,12 +116,12 @@ public class LoginController {
 		// valid passowrd
 		String passwordHash = Sha256Tool.sha256(password);
 		if (!SecurityTool.safeEquals(passwordHash, xxlJobUser.getPassword())) {
-			loginFail(userName);
+			loginFail(lockKey);
 			ThreatDetector.trackFailure("admin-login", remote);
 			SecurityTool.event("ADMIN_LOGIN_FAIL", "reason", "password invalid", "username", userName, "remote", remote);
 			return Response.ofFail( I18nUtil.getString("login_param_invalid") );
 		}
-		loginFailRepository.remove(userName);
+		loginFailRepository.remove(lockKey);
 		SecurityTool.AUDIT_LOGGER.info(">>>>>>>>>>> xxl-job operation log: operator = {}, type = {}, content = {}",
 				userName, "login-success", remote);
 

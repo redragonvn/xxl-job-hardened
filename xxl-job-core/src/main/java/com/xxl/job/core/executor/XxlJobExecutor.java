@@ -6,6 +6,7 @@ import com.xxl.job.core.handler.annotation.XxlJob;
 import com.xxl.job.core.handler.impl.MethodJobHandler;
 import com.xxl.job.core.log.XxlJobFileAppender;
 import com.xxl.job.core.openapi.admin.AdminBiz;
+import com.xxl.job.core.security.SecurityAlerter;
 import com.xxl.job.core.security.SecurityTool;
 import com.xxl.job.core.server.EmbedServer;
 import com.xxl.job.core.thread.ExecutorRegistryThreadHelper;
@@ -184,6 +185,7 @@ public class XxlJobExecutor  {
             throw new RuntimeException("xxl-job executor " + SecurityTool.weakTokenMsg());
         }
         logger.info(">>>>>>>>>>> xxl-job hardened executor, glue disabled, handlerAllowlist:{}", handlerAllowlist==null?"<all registered>":handlerAllowlist);
+        SecurityAlerter.configure(null, null, "xxl-job-executor:" + appname);
 
         // bind instance
         xxlJobExecutor = this;
