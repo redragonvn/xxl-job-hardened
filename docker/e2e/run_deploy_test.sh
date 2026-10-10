@@ -3,7 +3,7 @@
 # Builds the images, deploys ../docker-compose.yml with a test override, and checks
 # startup guards, registration, a BEAN job round trip, posture / metrics, container hardening and log integrity.
 #
-# usage: docker/e2e/run_deploy_test.sh     (from repo root, after: mvn clean install -Dgpg.skip)
+# usage: docker/e2e/run_deploy_test.sh     (from repo root, after: mvn clean install)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -96,7 +96,7 @@ server.tomcat.remoteip.internal-proxies=10\\.0\\.0\\.15|10\\.0\\.0\\.16
 | `docker/k8s/executor-networkpolicy.yaml` | **P0**: only admin pods may reach the executor port; executor egress limited. Adjust labels and namespaces. |
 | `docker/k8s/executor-pod-security.yaml` | Reference executor pod: non-root, read-only rootfs, no capabilities, no ServiceAccount token, secrets from a Secret. |
 
-Build: `mvn clean install -Dgpg.skip` (GPG signing is for upstream releases). Tests are skipped by default; run with `-Dmaven.test.skip=false`.
+Build: `mvn clean install`. The upstream `release` profile (GPG signing, Maven Central publishing) is opt-in in this fork; never use `-Prelease` for internal builds. Tests are skipped by default; run with `-Dmaven.test.skip=false`.
 
 ## 3. Migration checklist
 
@@ -212,7 +212,7 @@ SELECT id, username, role, permission FROM xxl_job_user;
 
 ## 6. Test status
 
-**Build and unit tests**: the full build compiles with JDK 17 (`maven:3.9-eclipse-temurin-17` in Docker). `SecurityToolTest` and `ThreatDetectorTest` pass 11 of 11, run with `-Dmaven.test.skip=false`.
+**Build and unit tests**: the full build compiles with JDK 17 (`maven:3.9-eclipse-temurin-17` in Docker), with no extra flags. `SecurityToolTest` and `ThreatDetectorTest` pass 11 of 11, run with `-Dmaven.test.skip=false`.
 
 **Deployment and functional test**: `docker/e2e/run_deploy_test.sh` builds the images, deploys `docker/docker-compose.yml` with a test override (webhook receiver, marker rules file) and checks:
 
@@ -225,7 +225,7 @@ SELECT id, username, role, permission FROM xxl_job_user;
 | Container | Admin and executor run as uid 10001, read-only rootfs, no capabilities; executor and MySQL ports not published; admin bound to 127.0.0.1; executor stops on SIGTERM within the grace period. |
 | Log integrity | Admin and executor security-log chains verify; a copy with one deleted line is detected as BROKEN. |
 
-Run it with `docker/e2e/run_deploy_test.sh` after `mvn clean install -Dgpg.skip`. Results and artifacts go to `docker/e2e/out/` (git-ignored).
+Run it with `docker/e2e/run_deploy_test.sh` after `mvn clean install`. Results and artifacts go to `docker/e2e/out/` (git-ignored).
 
 **Not covered here: negative security testing.** Attack-path cases (GLUE attempts through each API, token misuse, cross-group registration, trigger address override, rejected handlers, payload rules against real detection content) are not part of this test suite and must be validated by your own test plan or a pentest of the hardened build in staging. Prove on the executor host that rejected payloads never execute (e.g. a file the payload would create never appears), not only that the events are logged.
 

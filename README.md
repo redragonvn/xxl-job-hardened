@@ -1,3 +1,6 @@
+> **xxl-job-hardened `3.5.1-hardened.1`**: security-hardened fork (GLUE execution removed, token / registry hardening, detection and audit).
+> See [Release Notes](doc/RELEASE_NOTES-3.5.1-hardened.1.md), [Migration Guide](doc/MIGRATION_GUIDE.md), [Hardening & Operations](doc/HARDENING.md), [Changelog](CHANGELOG.md).
+
 <p align="center" >
     <img src="https://www.xuxueli.com/project/static/xxl-job/images/xxl-logo.jpg" width="150">
     <h3 align="center">XXL-JOB</h3>

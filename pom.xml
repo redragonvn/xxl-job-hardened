@@ -221,8 +221,10 @@
 
 		<profile>
 			<id>release</id>
+			<!-- hardened fork: opt-in only (-Prelease). Upstream had it active by default, which signs with gpg and makes
+			     "mvn deploy" publish to Maven Central; internal deploys must never go there. -->
 			<activation>
-				<activeByDefault>true</activeByDefault>
+				<activeByDefault>false</activeByDefault>
 			</activation>
 			<modules>
 				<module>xxl-job-core</module>
