@@ -16,7 +16,7 @@ Every executor application must be rebuilt against `com.xuxueli:xxl-job-core:3.5
 | Token exposure | `/jobgroup/loadById` now checks group permission and never returns `accessToken`. `XxlJobGroup.toString()` masks the token. | `JobGroupController`, `XxlJobGroup` |
 | OpenAPI job management | `addJob / updateJob / removeJob / startJob / stopJob / triggerJob` are **disabled by default**, because they authenticate with the executor token that every executor host holds. | `OpenApiController`, `xxl.job.openapi.job-manage.enabled` |
 | Executor registry | An executor can only register into **its own** group (`registryKey` == authenticated appname). The address must be http(s), and its host must match `xxl.job.registry.allowed-cidrs` if that is set. | `OpenApiController.validRegistry` |
-| Executor RPC source | `xxl.job.executor.admin-cidrs` (env `XXL_JOB_ADMIN_CIDRS`) restricts the executor port to the admin's source IP/CIDR: any other source is rejected before auth and raises `EXECUTOR_SCAN` (reason `source not allowed`). App-layer defense-in-depth for the executor NetworkPolicy, so a stolen token presented from a non-admin host cannot reach the port. Uses the raw TCP peer (not a forwarded header). Blank = not enforced (with a startup warning). | `XxlJobExecutor.isAdminSourceAllowed`, `EmbedServer` |
+| Executor RPC source | `xxl.job.executor.admin-cidrs` (env `XXL_JOB_ADMIN_CIDRS`) restricts the executor port to the admin's source IP/CIDR: any other source is rejected before auth and raises `EXECUTOR_SCAN` (reason `source not allowed`). The presented token is still inspected: the real token raises `EXECUTOR_TOKEN_WRONG_SOURCE`, a canary or default token raises `CANARY_TOKEN_USED` / `EXPLOIT_DEFAULT_TOKEN`. App-layer defense-in-depth for the executor NetworkPolicy, so a stolen token presented from a non-admin host cannot reach the port. Uses the raw TCP peer (not a forwarded header). Blank = not enforced (with a startup warning). | `XxlJobExecutor.isAdminSourceAllowed`, `EmbedServer` |
 | Manual trigger address | The `addressList` override must be a registered node of the group. Before, it could send the group token to any host (token theft and SSRF). | `XxlJobServiceImpl.trigger`, `JobTrigger` |
 | Default admin | The admin refuses to start while user `admin` still has the default password `123456`, unless `xxl.job.security.init-admin-password` is provided to reset it. | `SecurityStartupCheck` |
 | Login | Two lockout limits, both enforced: 5 failures for a username **from one source IP** lock that pair (a remote attacker cannot lock out a legitimate admin elsewhere), and 20 failures from one source IP with any usernames lock that IP (stops random-username guessing). Both windows and locks are 15 minutes. The tables are never cleared: on overflow only expired, then unlocked entries are evicted, so flooding cannot release a lock. Success and failure are audited. | `LoginAttemptGuard`, `LoginController` |
@@ -132,11 +132,12 @@ severity=<LEVEL> event=<TYPE> key="value" ... seq=<n> chain=<16 hex>
 | `EXECUTOR_EXPLOIT_PROBE` | CRITICAL | The legacy `/run` executor API was called (targeted by unauthenticated GLUE exploits). |
 | `EXECUTOR_GLUE_REJECTED` | CRITICAL | GLUE code was sent to an executor **with a valid token**: the token or the admin is compromised. |
 | `OPENAPI_JOB_MANAGE_REJECTED` | CRITICAL | An executor token was used to manage jobs: the executor host is likely compromised. |
+| `EXECUTOR_TOKEN_WRONG_SOURCE` | CRITICAL | The real executor token was sent from outside `admin-cidrs`. `remote` is not an admin: the token is stolen, rotate it. `remote` is an admin: `admin-cidrs` is outdated, fix it (jobs to this executor fail until then). |
 | `PAYLOAD_RULE_MATCH` | rule severity (≥ HIGH) | A SOC rule matched `glueSource` / `executorParam`. |
 | `PAYLOAD_CAPTURED` | HIGH | A GLUE or rejected payload was captured as evidence; no rule matched. |
 | `PAYLOAD_SUSPICIOUS` | MEDIUM | Only generic signals (encoded blob, high entropy, large param, shell metachar). |
 | `EXECUTOR_HANDLER_REJECTED` | HIGH | A handler outside the allowlist (or `commandJobHandler` / `httpJobHandler`) was requested. |
-| `EXECUTOR_SCAN` | HIGH | A non-POST request or unknown path hit the executor port. |
+| `EXECUTOR_SCAN` | HIGH | A non-POST request or unknown path hit the executor port, or a request came from outside `admin-cidrs` (reason `source not allowed`). |
 | `ADMIN_GLUE_REJECTED` | HIGH | Attempt to create or edit GLUE, or a legacy GLUE job was triggered. |
 | `ADMIN_GLUE_JOB_PRESENT` | HIGH | A GLUE job still exists in the database (startup inventory). |
 | `ADMIN_TRIGGER_ADDRESS_REJECTED` | HIGH | A manual trigger aimed at an unregistered host (token theft / SSRF attempt). |
@@ -185,7 +186,7 @@ Invalid lines and regexes are skipped with a warning. The file is reloaded withi
 
 ### 5.2 Canary (honey) tokens
 
-Generate decoy tokens (`echo t$(openssl rand -hex 24)`), set them in `xxl.job.security.canary-tokens` / `XXL_JOB_SECURITY_CANARY_TOKENS`, and plant each one in a different place an attacker would look: a fake `application.properties` in a repo, a wiki page, a ConfigMap, a CI variable, a backup. When any of them is presented to the executor or the OpenAPI, `CANARY_TOKEN_USED` fires. The event carries a 12-char hash prefix of the token, so keep a table of which prefix was planted where; that tells you which location leaked.
+Generate decoy tokens (`echo t$(openssl rand -hex 24)`), set them in `xxl.job.security.canary-tokens` / `XXL_JOB_SECURITY_CANARY_TOKENS`, and plant each one in a different place an attacker would look: a fake `application.properties` in a repo, a wiki page, a ConfigMap, a CI variable, a backup. When any of them is presented to the executor or the OpenAPI, `CANARY_TOKEN_USED` fires, including from a source that `admin-cidrs` rejects. The event carries a 12-char hash prefix of the token, so keep a table of which prefix was planted where; that tells you which location leaked.
 
 ### 5.3 Other signals
 

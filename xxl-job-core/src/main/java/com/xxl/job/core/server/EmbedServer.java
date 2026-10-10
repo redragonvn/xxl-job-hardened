@@ -216,6 +216,12 @@ public class EmbedServer {
             if (!xxlJobExecutor.isAdminSourceAllowed(remoteAddress)) {
                 SecurityTool.event("EXECUTOR_SCAN", "reason", "source not allowed", "method", httpMethod, "remote", remoteAddress, "uri", uri);
                 ThreatDetector.trackFailure("executor-scan", remoteAddress);
+                // still inspect the presented token, so a stolen token / canary / default token used from a non-admin host is not hidden by the source check
+                if (SecurityTool.safeEquals(accessToken, xxlJobExecutor.getAccessToken())) {
+                    SecurityTool.event("EXECUTOR_TOKEN_WRONG_SOURCE", "remote", remoteAddress, "uri", uri, "appname", appname);
+                } else {
+                    ThreatDetector.inspectPresentedToken(accessToken, "executor", "remote", remoteAddress, "uri", uri, "appname", appname);
+                }
                 return Response.ofFail("invalid request, source not allowed.");
             }
             // valid
