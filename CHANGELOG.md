@@ -45,7 +45,7 @@ Status: **release candidate**. Deployment and functional tests pass; attack-path
 - Sample executors read the token from `XXL_JOB_ACCESS_TOKEN`; `glueenabled` replaced by `handlerallowlist` in sample configs.
 - `server.forward-headers-strategy=none` set explicitly (configure a trusted proxy when behind an ingress).
 - Upstream operation-log lines routed to the `xxl-job-audit` logger.
-- Upstream `release` profile (GPG signing + Maven Central publishing) is now opt-in (`-Prelease`). Upstream had it active by default, so `mvn deploy` would target Maven Central; plain `mvn clean install` now works without `-Dgpg.skip`.
+- Upstream `release` profile (GPG signing + Maven Central publishing) is now opt-in (`-Prelease`). Upstream had it active by default, so `mvn deploy` would target Maven Central; plain `mvn clean install` now works without `-Dgpg.skip`. The compiler configuration (`-parameters`, required by Spring MVC parameter binding) moved from that profile into the main build.
 
 ### Removed
 

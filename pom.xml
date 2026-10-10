@@ -214,6 +214,18 @@
 
 	<build>
 		<plugins>
+			<!-- hardened fork: compiler config moved out of the (now opt-in) release profile.
+			     "parameters" is required: Spring MVC binds un-annotated controller params by name (e.g. /auth/doLogin). -->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-compiler-plugin</artifactId>
+				<version>${maven-compiler-plugin.version}</version>
+				<configuration>
+					<source>${maven.compiler.source}</source>
+					<target>${maven.compiler.target}</target>
+					<parameters>true</parameters>
+				</configuration>
+			</plugin>
 		</plugins>
 	</build>
 
