@@ -10,12 +10,13 @@ Every executor application must be rebuilt against `com.xuxueli:xxl-job-core:3.5
 |---|---|---|
 | GLUE (Executor) | Every non-BEAN trigger is rejected. `glueEnabled=true` is ignored. The Groovy loader and the script handler throw if they are ever reached. | `ExecutorBizImpl`, `XxlJobExecutor`, `GlueFactory`, `ScriptJobHandler` |
 | GLUE (Admin) | Creating a non-BEAN job is rejected for both the web UI and the OpenAPI. `/jobcode/save` is disabled. GLUE jobs already in the database are never dispatched; their job log shows a failure. | `XxlJobServiceImpl.add`, `JobCodeController.save`, `JobTrigger` |
-| Handler allowlist | `xxl.job.executor.handlerallowlist` sets which BEAN handlers may run. The sample handlers `commandJobHandler` (OS command) and `httpJobHandler` (SSRF) are always denied unless explicitly allowlisted. | `XxlJobExecutor.isHandlerAllowed` |
+| Handler allowlist | `xxl.job.executor.handlerallowlist` sets which BEAN handlers may run. **Fail-closed**: blank is rejected and the executor refuses to start. Use an explicit comma-separated list, or `*` to allow every business handler. The sample handlers `commandJobHandler` (OS command) and `httpJobHandler` (SSRF) stay denied under `*` and must be named explicitly to run. | `XxlJobExecutor.isHandlerAllowed` |
 | Token strength | Tokens that are blank, `default_token`, a known default, or shorter than 32 chars are rejected: the executor refuses to start, and the admin refuses to trigger, accept OpenAPI calls, or save the group. | `SecurityTool.isWeakToken` |
 | Token compare | Constant-time comparison (`MessageDigest.isEqual`). | `EmbedServer`, `OpenApiController`, `LoginController` |
 | Token exposure | `/jobgroup/loadById` now checks group permission and never returns `accessToken`. `XxlJobGroup.toString()` masks the token. | `JobGroupController`, `XxlJobGroup` |
 | OpenAPI job management | `addJob / updateJob / removeJob / startJob / stopJob / triggerJob` are **disabled by default**, because they authenticate with the executor token that every executor host holds. | `OpenApiController`, `xxl.job.openapi.job-manage.enabled` |
 | Executor registry | An executor can only register into **its own** group (`registryKey` == authenticated appname). The address must be http(s), and its host must match `xxl.job.registry.allowed-cidrs` if that is set. | `OpenApiController.validRegistry` |
+| Executor RPC source | `xxl.job.executor.admin-cidrs` (env `XXL_JOB_ADMIN_CIDRS`) restricts the executor port to the admin's source IP/CIDR: any other source is rejected before auth and raises `EXECUTOR_SCAN` (reason `source not allowed`). App-layer defense-in-depth for the executor NetworkPolicy, so a stolen token presented from a non-admin host cannot reach the port. Uses the raw TCP peer (not a forwarded header). Blank = not enforced (with a startup warning). | `XxlJobExecutor.isAdminSourceAllowed`, `EmbedServer` |
 | Manual trigger address | The `addressList` override must be a registered node of the group. Before, it could send the group token to any host (token theft and SSRF). | `XxlJobServiceImpl.trigger`, `JobTrigger` |
 | Default admin | The admin refuses to start while user `admin` still has the default password `123456`, unless `xxl.job.security.init-admin-password` is provided to reset it. | `SecurityStartupCheck` |
 | Login | Locks a username **for the failing source IP** for 15 minutes after 5 failures, so a remote attacker cannot lock out a legitimate admin. Success and failure are audited. | `LoginController` |
@@ -51,11 +52,14 @@ Executor (env vars, read directly by `xxl-job-core`, no code change needed in th
 ```properties
 xxl.job.executor.accessToken=${XXL_JOB_ACCESS_TOKEN:}
 xxl.job.executor.handlerallowlist=demoJobHandler,shardingJobHandler
+# restrict the executor RPC port to the admin's source IP/CIDR (blank = not enforced)
+xxl.job.executor.admin-cidrs=${XXL_JOB_ADMIN_CIDRS:}
 ```
 
 | Env var | Purpose |
 |---|---|
 | `XXL_JOB_ACCESS_TOKEN` | Executor token (sample apps). |
+| `XXL_JOB_ADMIN_CIDRS` | Admin source IP/CIDR allowed to reach the executor RPC port (e.g. `10.0.0.0/8`); blank = not enforced. |
 | `XXL_JOB_SECURITY_ALERT_WEBHOOK` | Alert webhook URL. |
 | `XXL_JOB_SECURITY_ALERT_MIN_SEVERITY` | Minimum alert severity, default `HIGH`. |
 | `XXL_JOB_SECURITY_PAYLOAD_RULES` | Path to the payload rules file. |
@@ -108,9 +112,10 @@ Build: `mvn clean install`. The upstream `release` profile (GPG signing, Maven C
 2. **Rotate every executor group token** to a random value of at least 32 chars, e.g. `echo t$(openssl rand -hex 24)` (49 chars). The UI only accepts `[a-z][a-z0-9_]*` up to 50 chars, so the token must start with a letter. Set it in Admin → Executor Management, and inject the same value into the executor through a Secret (`XXL_JOB_ACCESS_TOKEN`).
 3. **Reset the default admin password**: start once with `XXL_JOB_SECURITY_INIT_ADMIN_PASSWORD`, then remove the variable.
 4. Set `xxl.job.registry.allowed-cidrs` to the executor network.
-5. Set `xxl.job.executor.handlerallowlist` on each executor.
-6. Ship the security logs to the SIEM, restrict the evidence logs to the IR team, and configure the alert webhook.
-7. Deploy the payload rules file from the SOC's detection content, and plant canary tokens (section 5.2).
+5. Set `xxl.job.executor.handlerallowlist` on each executor (it fails closed when blank: use an explicit list, or `*` for all business handlers).
+6. Set `xxl.job.executor.admin-cidrs` (env `XXL_JOB_ADMIN_CIDRS`) on each executor to the admin's source IP/CIDR, so the RPC port rejects any other source even without a NetworkPolicy.
+7. Ship the security logs to the SIEM, restrict the evidence logs to the IR team, and configure the alert webhook.
+8. Deploy the payload rules file from the SOC's detection content, and plant canary tokens (section 5.2).
 
 ## 4. Security events (SIEM)
 
@@ -231,7 +236,7 @@ Run it with `docker/e2e/run_deploy_test.sh` after `mvn clean install`. Results a
 
 ## 7. Not covered by this build (needs infrastructure or bigger changes)
 
-- Applying the network restriction and runtime hardening in **your** environment: the files in `docker/k8s/` are references, and only the infrastructure can enforce them. **Still P0.**
+- Applying the network restriction and runtime hardening in **your** environment: the files in `docker/k8s/` are references, and only the infrastructure can enforce them. **Still P0.** The executor-side `xxl.job.executor.admin-cidrs` (section 2) is app-layer defense-in-depth for the RPC port, not a replacement for the NetworkPolicy/firewall.
 - Separate tokens for OpenAPI, registry and executor; token rotation with an overlap window; mTLS.
 - RBAC beyond admin/user, SSO/MFA, password hashing stronger than unsalted SHA-256.
 - Per-handler `executorParam` validation and approval workflow.

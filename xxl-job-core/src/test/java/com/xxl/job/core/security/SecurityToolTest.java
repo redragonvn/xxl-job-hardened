@@ -52,15 +52,32 @@ public class SecurityToolTest {
     @Test
     public void handlerAllowlist() {
         XxlJobExecutor executor = new XxlJobExecutor();
+        // blank / not configured = fail closed: nothing is allowed
+        assertFalse(executor.isHandlerAllowed("anyHandler"));
+        assertFalse(executor.isHandlerAllowed("demoJobHandler"));
+
+        // "*" = allow every business handler, but dangerous samples stay denied
+        executor.setHandlerAllowlist("*");
         assertTrue(executor.isHandlerAllowed("anyHandler"));
         assertFalse(executor.isHandlerAllowed("commandJobHandler"));
         assertFalse(executor.isHandlerAllowed("httpJobHandler"));
+        assertFalse(executor.isHandlerAllowed(null));
 
+        // explicit list = only those names
         executor.setHandlerAllowlist("demoJobHandler, shardingJobHandler");
         assertTrue(executor.isHandlerAllowed("demoJobHandler"));
         assertTrue(executor.isHandlerAllowed("shardingJobHandler"));
+        assertFalse(executor.isHandlerAllowed("anyHandler"));
         assertFalse(executor.isHandlerAllowed("commandJobHandler"));
         assertFalse(executor.isHandlerAllowed(null));
+
+        // a dangerous handler runs only when named explicitly
+        executor.setHandlerAllowlist("commandJobHandler");
+        assertTrue(executor.isHandlerAllowed("commandJobHandler"));
+
+        // blank again resets to fail-closed
+        executor.setHandlerAllowlist("");
+        assertFalse(executor.isHandlerAllowed("demoJobHandler"));
     }
 
 }

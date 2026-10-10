@@ -8,6 +8,7 @@ import com.xxl.job.core.log.XxlJobFileAppender;
 import com.xxl.job.core.openapi.admin.AdminBiz;
 import com.xxl.job.core.security.SecurityAlerter;
 import com.xxl.job.core.security.SecurityTool;
+import com.xxl.job.core.security.ThreatDetector;
 import com.xxl.job.core.server.EmbedServer;
 import com.xxl.job.core.thread.ExecutorRegistryThreadHelper;
 import com.xxl.job.core.thread.JobLogFileCleanThreadHelper;
@@ -61,7 +62,9 @@ public class XxlJobExecutor  {
     private String logPath = "/data/applogs/xxl-job/jobhandler";    // executor log-path
     private int logRetentionDays = 30;                              // executor log-retention-days
     private boolean glueEnabled = false;                            // hardened build: glue (non-BEAN) task is always disabled
-    private Set<String> handlerAllowlist = null;                    // hardened build: allowed BEAN handler names, null means all registered handlers
+    private volatile Set<String> handlerAllowlist = null;           // hardened build: explicit allowed BEAN handler names; null = not configured (blank fails closed at start)
+    private volatile boolean allowAllHandlers = false;             // hardened build: set by "*" = explicit allow-all business handlers (dangerous samples still denied)
+    private volatile String adminCidrs = null;                      // hardened build: allowed admin source ip/cidr for the RPC port, null means not enforced (token only); volatile: read by RPC threads, set at config/start
     /**
      * hardened build: dangerous sample handlers (os command / arbitrary http) often copied into production, denied unless explicitly allowlisted
      */
@@ -105,11 +108,20 @@ public class XxlJobExecutor  {
         this.glueEnabled = false;
     }
     /**
-     * @param handlerAllowlist  comma-separated BEAN handler names; blank means all registered handlers
+     * @param handlerAllowlist  comma-separated BEAN handler names; "*" = allow every business handler
+     *                          (commandJobHandler / httpJobHandler stay denied unless named explicitly);
+     *                          blank = not configured, which fails closed at start (no silent allow-all).
      */
     public void setHandlerAllowlist(String handlerAllowlist) {
         if (StringTool.isBlank(handlerAllowlist)) {
             this.handlerAllowlist = null;
+            this.allowAllHandlers = false;
+            return;
+        }
+        String trimmed = handlerAllowlist.trim();
+        if ("*".equals(trimmed)) {
+            this.allowAllHandlers = true;
+            this.handlerAllowlist = java.util.Collections.emptySet();
             return;
         }
         Set<String> allowlist = new HashSet<>();
@@ -118,7 +130,14 @@ public class XxlJobExecutor  {
                 allowlist.add(item.trim());
             }
         }
+        this.allowAllHandlers = false;
         this.handlerAllowlist = allowlist;
+    }
+    /**
+     * @param adminCidrs  comma-separated ip / cidr the admin connects from; blank means not enforced (token only)
+     */
+    public void setAdminCidrs(String adminCidrs) {
+        this.adminCidrs = StringTool.isBlank(adminCidrs) ? null : adminCidrs.trim();
     }
 
     public String getAppname() {
@@ -140,10 +159,26 @@ public class XxlJobExecutor  {
         if (name == null) {
             return false;
         }
-        if (handlerAllowlist == null) {
+        if (allowAllHandlers) {
+            // "*" allows every business handler, but never the dangerous samples unless named explicitly
             return !DANGEROUS_SAMPLE_HANDLERS.contains(name);
         }
+        if (handlerAllowlist == null) {
+            // not configured = fail closed (start() refuses; this is the belt-and-suspenders)
+            return false;
+        }
         return handlerAllowlist.contains(name);
+    }
+    /**
+     * hardened build: is the RPC caller's source address an allowed admin source. Blank config = not enforced.
+     * Uses the raw TCP peer (not any forwarded header), so it is not header-spoofable; L3 source spoofing on a
+     * flat segment is still possible, so treat this as containment, not authentication.
+     */
+    public boolean isAdminSourceAllowed(String remoteAddress) {
+        if (adminCidrs == null) {
+            return true;
+        }
+        return SecurityTool.matchCidrList(ThreatDetector.stripPort(remoteAddress), adminCidrs);
     }
 
 
@@ -184,7 +219,21 @@ public class XxlJobExecutor  {
         if (SecurityTool.isWeakToken(accessToken)) {
             throw new RuntimeException("xxl-job executor " + SecurityTool.weakTokenMsg());
         }
-        logger.info(">>>>>>>>>>> xxl-job hardened executor, glue disabled, handlerAllowlist:{}", handlerAllowlist==null?"<all registered>":handlerAllowlist);
+        // hardened build: handler allowlist fails closed; blank is a misconfiguration, require an explicit list or "*"
+        if (handlerAllowlist == null && !allowAllHandlers) {
+            throw new RuntimeException("xxl-job executor handlerallowlist is blank; set 'xxl.job.executor.handlerallowlist' to an explicit comma-separated list, or '*' to allow all business handlers (commandJobHandler/httpJobHandler stay denied unless named).");
+        }
+        logger.info(">>>>>>>>>>> xxl-job hardened executor, glue disabled, handlerAllowlist:{}", allowAllHandlers?"* (all business handlers; commandJobHandler/httpJobHandler denied)":handlerAllowlist);
+        // hardened build: admin source allowlist for the RPC port; fall back to env / system property
+        if (adminCidrs == null) {
+            String envCidrs = System.getenv("XXL_JOB_ADMIN_CIDRS");
+            setAdminCidrs(StringTool.isBlank(envCidrs) ? System.getProperty("xxl.job.executor.admin-cidrs") : envCidrs);
+        }
+        if (adminCidrs == null) {
+            logger.warn(">>>>>>>>>>> xxl-job hardened executor, 'xxl.job.executor.admin-cidrs' (env XXL_JOB_ADMIN_CIDRS) is blank, the RPC port accepts any source IP (token only). Set it to the admin pod/node CIDR to restrict.");
+        } else {
+            logger.info(">>>>>>>>>>> xxl-job hardened executor, RPC source restricted to admin cidrs: {}", adminCidrs);
+        }
         SecurityAlerter.configure(null, null, "xxl-job-executor:" + appname);
 
         // bind instance
