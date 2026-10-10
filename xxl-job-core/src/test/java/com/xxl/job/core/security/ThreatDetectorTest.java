@@ -59,14 +59,36 @@ public class ThreatDetectorTest {
         assertTrue(SecurityTool.eventCounters().get("EXPLOIT_DEFAULT_TOKEN") >= 1);
     }
 
+    private static long bruteForceEvents() {
+        return SecurityTool.eventCounters().getOrDefault("BRUTE_FORCE_DETECTED", 0L);
+    }
+
     @Test
     public void bruteForce() {
+        long before = bruteForceEvents();
         String source = "/10.9.8.7:51234";
         for (int i = 0; i < 25; i++) {
             ThreatDetector.trackFailure("unit-test", source);
         }
         // raised once per window
-        assertEquals(1L, SecurityTool.eventCounters().get("BRUTE_FORCE_DETECTED"));
+        assertEquals(before + 1, bruteForceEvents());
+    }
+
+    /**
+     * a flood of other sources must not reset an attacker's in-progress counter (tracker is never cleared)
+     */
+    @Test
+    public void bruteForceSurvivesFlood() {
+        String attacker = "/10.66.66.66:40000";
+        for (int i = 0; i < 9; i++) {
+            ThreatDetector.trackFailure("unit-flood", attacker);
+        }
+        for (int i = 0; i < 60_000; i++) {
+            ThreatDetector.trackFailure("unit-flood", "/100." + (i / 65536) + "." + ((i / 256) % 256) + "." + (i % 256) + ":1");
+        }
+        long before = bruteForceEvents();
+        ThreatDetector.trackFailure("unit-flood", attacker);
+        assertEquals(before + 1, bruteForceEvents());
     }
 
     @Test

@@ -18,7 +18,7 @@ Every executor application must be rebuilt against `com.xuxueli:xxl-job-core:3.5
 | Executor registry | An executor can only register into **its own** group (`registryKey` == authenticated appname). The address must be http(s), and its host must match `xxl.job.registry.allowed-cidrs` if that is set. | `OpenApiController.validRegistry` |
 | Manual trigger address | The `addressList` override must be a registered node of the group. Before, it could send the group token to any host (token theft and SSRF). | `XxlJobServiceImpl.trigger`, `JobTrigger` |
 | Default admin | The admin refuses to start while user `admin` still has the default password `123456`, unless `xxl.job.security.init-admin-password` is provided to reset it. | `SecurityStartupCheck` |
-| Login | Locks a username **for the failing source IP** for 15 minutes after 5 failures, so a remote attacker cannot lock out a legitimate admin. Success and failure are audited. | `LoginController` |
+| Login | Two lockout limits, both enforced: 5 failures for a username **from one source IP** lock that pair (a remote attacker cannot lock out a legitimate admin elsewhere), and 20 failures from one source IP with any usernames lock that IP (stops random-username guessing). Both windows and locks are 15 minutes. The tables are never cleared: on overflow only expired, then unlocked entries are evicted, so flooding cannot release a lock. Success and failure are audited. | `LoginAttemptGuard`, `LoginController` |
 | Container / deploy | Non-root (uid 10001) images that copy one exact jar; hardened compose (read-only rootfs, no capabilities, no-new-privileges, only admin published, dedicated DB user, required secrets); Kubernetes reference NetworkPolicy and pod security. | `*/Dockerfile`, `docker/`, `docker/k8s/` |
 | Visibility | Security events go to the `xxl-job-security` logger and operation audit to the `xxl-job-audit` logger. The admin writes both to `xxl-job-admin-security.log`. Every event has a severity, a counter and a hash-chain field. | `SecurityTool`, `SecuritySeverity`, `logback.xml` |
 | Detection | Payload inspection with SOC rules, evidence capture, canary tokens, exploit fingerprints, brute-force and scan detection, privileged-change audit, GLUE inventory at startup. See section 5. | `ThreatDetector`, `SecurityAuditFilter`, `SecurityStartupCheck` |
@@ -74,7 +74,7 @@ Executor apps not based on the samples should add the `xxl-job-security` and `xx
 
 ### Reverse proxy
 
-The client IP drives login lockout, brute-force detection and the security log. The default `server.forward-headers-strategy=none` ignores `X-Forwarded-For`, which is correct when the admin is reached directly. Behind an ingress or proxy, set `native` **and** trust only the proxy addresses, otherwise any client can spoof its IP:
+The client IP drives login lockout, brute-force detection and the security log. The default `server.forward-headers-strategy=none` ignores `X-Forwarded-For`, which is correct when the admin is reached directly. Behind an ingress or proxy, set `native` **and** trust only the proxy addresses, otherwise any client can spoof its IP. Getting this right also matters for availability: if every request appears to come from the proxy, the per-IP login limit locks **all** users after 20 failures from anyone:
 
 ```properties
 server.forward-headers-strategy=native
@@ -212,7 +212,7 @@ SELECT id, username, role, permission FROM xxl_job_user;
 
 ## 6. Test status
 
-**Build and unit tests**: the full build compiles with JDK 17 (`maven:3.9-eclipse-temurin-17` in Docker), with no extra flags. `SecurityToolTest` and `ThreatDetectorTest` pass 11 of 11, run with `-Dmaven.test.skip=false`.
+**Build and unit tests**: the full build compiles with JDK 17 (`maven:3.9-eclipse-temurin-17` in Docker), with no extra flags. `SecurityToolTest`, `ThreatDetectorTest` and `LoginAttemptGuardTest` pass 18 of 18, run with `-Dmaven.test.skip=false -Dtest='SecurityToolTest,ThreatDetectorTest,LoginAttemptGuardTest' -Dsurefire.failIfNoSpecifiedTests=false` (the upstream admin OpenAPI tests need a live server).
 
 **Deployment and functional test**: `docker/e2e/run_deploy_test.sh` builds the images, deploys `docker/docker-compose.yml` with a test override (webhook receiver, marker rules file) and checks:
 
@@ -235,7 +235,7 @@ Run it with `docker/e2e/run_deploy_test.sh` after `mvn clean install`. Results a
 - Separate tokens for OpenAPI, registry and executor; token rotation with an overlap window; mTLS.
 - RBAC beyond admin/user, SSO/MFA, password hashing stronger than unsalted SHA-256.
 - Per-handler `executorParam` validation and approval workflow.
-- Login lockout and brute-force state are in memory, per admin instance; they reset on restart and are not shared across a cluster. A distributed password-guessing attack (many source IPs) is detected per source only; rely on SSO/MFA for strong protection.
+- Login lockout and brute-force state are in memory, per admin instance; they reset on restart and are not shared across a cluster. Each source IP gets at most 20 guesses per 15 minutes; an attacker with many source IPs (botnet) still gets 20 guesses per IP. Rely on SSO/MFA for strong protection. Users sharing a NAT address with an attacker can be locked out for 15 minutes.
 
 ## 8. Go-live checklist (needs people / infrastructure)
 

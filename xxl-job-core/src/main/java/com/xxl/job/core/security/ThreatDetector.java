@@ -293,8 +293,10 @@ public class ThreatDetector {
 
     private static final int BRUTE_FORCE_THRESHOLD = 10;
     private static final long BRUTE_FORCE_WINDOW = 60 * 1000L;
-    private static final int TRACKER_MAX_SIZE = 10000;
-    private static final ConcurrentMap<String, long[]> FAILURE_TRACKER = new ConcurrentHashMap<>();   // key -> [windowStart, count, alerted]
+    private static final int TRACKER_MAX_SIZE = 50000;
+    private static final long TRACKER_EVICT_INTERVAL = 1000L;
+    private static final ConcurrentMap<String, long[]> FAILURE_TRACKER = new ConcurrentHashMap<>();   // kind|ip -> [windowStart, count, alerted]
+    private static final java.util.concurrent.atomic.AtomicLong TRACKER_LAST_EVICT = new java.util.concurrent.atomic.AtomicLong(0);
 
     /**
      * count a failure for (kind, source); raise BRUTE_FORCE_DETECTED once per window when threshold reached
@@ -303,11 +305,9 @@ public class ThreatDetector {
         if (source == null) {
             return;
         }
-        if (FAILURE_TRACKER.size() > TRACKER_MAX_SIZE) {
-            FAILURE_TRACKER.clear();
-        }
         String key = kind + "|" + stripPort(source);
         long now = System.currentTimeMillis();
+        evictTrackerIfNeeded(now);
         long[] state = FAILURE_TRACKER.compute(key, (k, v) -> {
             if (v == null || now - v[0] > BRUTE_FORCE_WINDOW) {
                 v = new long[]{now, 0, 0};
@@ -326,6 +326,29 @@ public class ThreatDetector {
             SecurityTool.event("BRUTE_FORCE_DETECTED", "kind", kind, "source", stripPort(source),
                     "failures", state[1], "windowSeconds", BRUTE_FORCE_WINDOW / 1000);
         }
+    }
+
+    /**
+     * never clear the tracker (a flood would reset in-progress counters and hide the attack):
+     * drop expired windows first, then entries that already alerted; un-alerted counters in their window are kept.
+     * keys are per (kind, source ip), so growth is bounded by distinct sources.
+     */
+    private static void evictTrackerIfNeeded(long now) {
+        if (FAILURE_TRACKER.size() < TRACKER_MAX_SIZE) {
+            return;
+        }
+        long last = TRACKER_LAST_EVICT.get();
+        if (now - last < TRACKER_EVICT_INTERVAL || !TRACKER_LAST_EVICT.compareAndSet(last, now)) {
+            return;
+        }
+        FAILURE_TRACKER.entrySet().removeIf(e -> now - e.getValue()[0] > BRUTE_FORCE_WINDOW);
+        if (FAILURE_TRACKER.size() >= TRACKER_MAX_SIZE) {
+            FAILURE_TRACKER.entrySet().removeIf(e -> e.getValue()[2] == 1);
+        }
+    }
+
+    static int trackerSize() {
+        return FAILURE_TRACKER.size();
     }
 
     /**

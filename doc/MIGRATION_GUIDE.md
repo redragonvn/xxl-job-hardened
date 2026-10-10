@@ -268,5 +268,6 @@ Triggers to that group fail between steps 1 and 2; do it in a short window. Rota
 | OpenAPI returns `openapi job management is disabled` | Job-management OpenAPI off by default | Use the admin UI, or enable explicitly and accept the risk. |
 | Manual trigger: `address [...] is not a registered node` | Address override not in the group's registry | Use one of the registered addresses (exact match). |
 | Many `EXECUTOR_SCAN` alerts | HTTP health probe on the executor port | Switch to a TCP probe. |
-| All logins / alerts show the same IP | Admin behind a proxy | Configure `server.forward-headers-strategy=native` with `server.tomcat.remoteip.internal-proxies`. |
+| All logins / alerts show the same IP, or every user is locked out at once | Admin behind a proxy: all requests look like the proxy IP, so the per-IP login limit applies to everyone | Configure `server.forward-headers-strategy=native` with `server.tomcat.remoteip.internal-proxies`. |
+| A user cannot log in for 15 minutes after a few attempts | Username + IP lock (5 failures) or IP lock (20 failures, e.g. shared NAT with someone guessing) | Wait for the lock to expire; check `ADMIN_LOGIN_LOCKED` (`scope`) in the security log. |
 | `verify_chain.py` reports `BROKEN` | Security log edited or lines deleted | Treat as a security incident; compare with the SIEM copy. |

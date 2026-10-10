@@ -27,7 +27,7 @@ This release removes that execution path, closes the token and registration weak
 - The executor token can no longer create or modify jobs through the OpenAPI (disabled by default).
 - Executors can only register into their own group, from allowed networks.
 - Manual triggers can no longer be pointed at arbitrary hosts (token theft and SSRF).
-- The default admin password `123456` blocks startup until reset; brute-force lockout per username and source IP.
+- The default admin password `123456` blocks startup until reset; brute-force lockout per username + source IP and per source IP, which cannot be released by flooding the lockout table.
 
 **Detection and visibility**
 - Security event log with severity, a tamper-evident hash chain, and webhook alerting.
@@ -63,7 +63,7 @@ All hardening fails closed. Plan for the following before upgrading:
 | Verification | Result |
 |---|---|
 | Build (JDK 17, all modules) | Pass |
-| Unit tests (`SecurityToolTest`, `ThreatDetectorTest`) | 11 / 11 pass |
+| Unit tests (`SecurityToolTest`, `ThreatDetectorTest`, `LoginAttemptGuardTest`) | 18 / 18 pass |
 | Deployment and functional test in Docker (`docker/e2e/run_deploy_test.sh`): startup guards, token handling, registration, BEAN job round trip, posture / metrics, alerting, container hardening, log integrity | 47 / 47 pass |
 | Attack-path validation (pentest in staging) | **Pending; required before the production release** |
 

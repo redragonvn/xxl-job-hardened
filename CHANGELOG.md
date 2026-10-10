@@ -21,7 +21,7 @@ Status: **release candidate**. Deployment and functional tests pass; attack-path
 - **Executor registration restricted.** An executor can only register into its own group; the address must be http(s), and its host must match `xxl.job.registry.allowed-cidrs` when set.
 - **Manual trigger address override** limited to registered nodes of the group (previously it could send the group token to any host).
 - **Default admin password blocks startup.** The admin refuses to start while `admin/123456` is in use, unless `xxl.job.security.init-admin-password` is provided for a one-time reset.
-- **Login lockout**: 5 failures lock the username for the failing source IP for 15 minutes.
+- **Login lockout**: 5 failures lock the username for the failing source IP, and 20 failures from one source IP (any usernames) lock that IP, both for 15 minutes. Lockout tables are never cleared on overflow (only expired, then unlocked entries are evicted; locked entries are always kept).
 
 ### Added: visibility and detection
 
@@ -52,6 +52,8 @@ Status: **release candidate**. Deployment and functional tests pass; attack-path
 - Tracked `docker/.env` containing upstream default passwords (replaced by `docker/.env.example`, `.env` git-ignored).
 
 ### Fixed
+
+- Audit finding: login lockout could be bypassed by flooding failed logins with random usernames. The lockout table was cleared once it exceeded 10,000 entries, releasing every lock (including on `admin`). Fixed with the per-IP limit and eviction that never removes locked entries (`LoginAttemptGuard`). The brute-force detection tracker had the same clear-on-overflow pattern (a flood reset in-progress counters) and now evicts only expired or already-alerted entries.
 
 - Upstream Dockerfiles failed to build (`target/*.jar` glob matched the `-sources` / `-javadoc` jars).
 - Upstream test setup failed to start (JUnit engine/API version mismatch); fixed by importing `junit-bom`.
