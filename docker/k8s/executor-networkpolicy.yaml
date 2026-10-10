@@ -55,4 +55,4 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # TODO: add only the internal services (db / redis / api) your BEAN handlers need
+    # add rules here only for the internal services (db / redis / api) your BEAN handlers need
