@@ -1,0 +1,112 @@
+# xxl-job hardened build: baseline network containment (complements executor-networkpolicy.yaml).
+#
+# executor-networkpolicy.yaml already limits the executor RPC (:9999) to admin-only and limits
+# executor egress. This file adds the pieces that were missing: a namespace default-deny, and
+# ingress/egress limits for the admin and the DB (neither had any policy). Net effect: only the
+# admin may reach workers; a token leaked elsewhere cannot reach :9999; a compromised admin or DB
+# cannot reach outward beyond what it needs.
+#
+# Requires a CNI that enforces NetworkPolicy (Calico/Cilium/Antrea); verify with a real connection
+# test, not by reading YAML. Adjust labels/namespaces/ports to your deployment. Give the admin a
+# dedicated ServiceAccount so its identity maps to one workload.
+#
+# Assumed labels (match executor-networkpolicy.yaml):
+#   admin:    app.kubernetes.io/name=xxl-job-admin
+#   executor: app.kubernetes.io/component=xxl-job-executor
+#   db:       app.kubernetes.io/name=xxl-job-db
+---
+# default deny everything; all flows are additive exceptions (this is the keystone).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: xxl-job
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# admin egress: executor RPC, DB, DNS only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: xxl-job-admin-egress
+  namespace: xxl-job
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: xxl-job-admin
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: xxl-job-executor
+      ports:
+        - { protocol: TCP, port: 9999 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: xxl-job-db
+      ports:
+        - { protocol: TCP, port: 3306 }
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# admin ingress: workers (registry/callback/openapi) and the ingress controller (operator UI) only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: xxl-job-admin-ingress
+  namespace: xxl-job
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: xxl-job-admin
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: xxl-job-executor
+      ports:
+        - { protocol: TCP, port: 8080 }
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - { protocol: TCP, port: 8080 }
+---
+# db: admin-only ingress; DNS-only egress (default-deny would otherwise cut admin off from the DB).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: xxl-job-db
+  namespace: xxl-job
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: xxl-job-db
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: xxl-job-admin
+      ports:
+        - { protocol: TCP, port: 3306 }
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

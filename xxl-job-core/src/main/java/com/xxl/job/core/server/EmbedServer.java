@@ -212,6 +212,12 @@ public class EmbedServer {
          * dispatch request
          */
         private Object dispatchRequest(HttpMethod httpMethod, String uri, String requestData, String accessToken, String appname, String remoteAddress) {
+            // hardened build: the RPC port is admin-only; reject any source outside the configured admin cidrs (not enforced if blank)
+            if (!xxlJobExecutor.isAdminSourceAllowed(remoteAddress)) {
+                SecurityTool.event("EXECUTOR_SCAN", "reason", "source not allowed", "method", httpMethod, "remote", remoteAddress, "uri", uri);
+                ThreatDetector.trackFailure("executor-scan", remoteAddress);
+                return Response.ofFail("invalid request, source not allowed.");
+            }
             // valid
             if (HttpMethod.POST != httpMethod) {
                 // hardened build: admin only sends POST, anything else is a scanner / probe

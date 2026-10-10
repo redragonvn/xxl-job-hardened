@@ -52,6 +52,9 @@ public class XxlJobConfig {
     @Value("${xxl.job.executor.handlerallowlist:}")
     private String handlerAllowlist;
 
+    @Value("${xxl.job.executor.admin-cidrs:}")
+    private String adminCidrs;
+
 
     @Bean
     public XxlJobSpringExecutor xxlJobExecutor() {
@@ -69,6 +72,7 @@ public class XxlJobConfig {
         xxlJobSpringExecutor.setLogRetentionDays(logRetentionDays);
         xxlJobSpringExecutor.setExcludedPackage(excludedPackage);
         xxlJobSpringExecutor.setHandlerAllowlist(handlerAllowlist);
+        xxlJobSpringExecutor.setAdminCidrs(adminCidrs);
 
         return xxlJobSpringExecutor;
     }
